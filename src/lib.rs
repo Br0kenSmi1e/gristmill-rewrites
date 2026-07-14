@@ -1,17 +1,18 @@
 //! Cost-free symbolic rewrite environment.
-//!
-//! This crate currently defines only its high-level API shape. Symbolic state
-//! representation, rewrite discovery, and transition behavior are deliberately
-//! left for later design.
 
 pub mod action;
+pub mod repr;
 pub mod state;
 pub mod transition;
 
 pub use action::{
     Action, ActionQuery, ActionSpace, DefinitionPosition, QueryError, TermPosition, query,
 };
-pub use state::State;
+pub use repr::{
+    Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator,
+    TensorDef, TensorId, TensorInfo, TensorRef, Term,
+};
+pub use state::{State, StateError};
 pub use transition::{ApplyError, apply};
 
 #[cfg(test)]
