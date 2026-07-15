@@ -1,9 +1,10 @@
-//! Validated symbolic rewrite state.
+//! Validated symbolic rewrite state with canonical definition terms.
 
-use crate::repr::{Computation, IndexId, RangeId, TensorId};
+use crate::canon::{CanonError, canon_term};
+use crate::repr::{Coefficient, Computation, IndexId, RangeId, TensorId, Term};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A structural validation failure while constructing a [`State`].
+/// A validation or canonicalization failure while constructing a [`State`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateError {
     UnknownRange {
@@ -62,12 +63,10 @@ pub enum StateError {
     DependencyCycle {
         tensor: TensorId,
     },
+    Canonicalization(CanonError),
 }
 
-/// A structurally valid symbolic computation and its protected outputs.
-///
-/// Canonicalization is a later layer. This type currently guarantees only the
-/// representation and dependency invariants checked by [`State::new`].
+/// A structurally valid computation with canonical terms and protected outputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     computation: Computation,
@@ -75,19 +74,24 @@ pub struct State {
 }
 
 impl State {
-    /// Validate a computation and establish its protected outputs.
+    /// Validate and canonicalize a computation, then establish its outputs.
     pub fn new(
         computation: Computation,
         protected_outputs: Vec<TensorId>,
     ) -> Result<Self, StateError> {
         let definitions = validate_computation(&computation)?;
         validate_protected_outputs(&computation, &definitions, &protected_outputs)?;
-        validate_acyclic(&computation, &definitions)?;
 
-        Ok(Self {
+        let mut state = Self {
             computation,
             protected_outputs,
-        })
+        };
+        state
+            .canonicalize_definitions()
+            .map_err(StateError::Canonicalization)?;
+        validate_acyclic(&state.computation, &definitions)?;
+
+        Ok(state)
     }
 
     pub fn computation(&self) -> &Computation {
@@ -100,6 +104,39 @@ impl State {
 
     pub fn into_parts(self) -> (Computation, Vec<TensorId>) {
         (self.computation, self.protected_outputs)
+    }
+
+    fn canonicalize_definitions(&mut self) -> Result<(), CanonError> {
+        for position in 0..self.computation.definitions.len() {
+            let mut canonical = Vec::<Term>::new();
+            {
+                let definition = &self.computation.definitions[position];
+                for term in &definition.rhs {
+                    let Some(term) = canon_term(&self.computation, &definition.exts, term)? else {
+                        continue;
+                    };
+
+                    if let Some(existing) = canonical.iter_mut().find(|existing| {
+                        existing.sums == term.sums && existing.factors == term.factors
+                    }) {
+                        existing.coeff += term.coeff;
+                    } else {
+                        canonical.push(term);
+                    }
+                }
+            }
+
+            let zero = Coefficient::from_integer(0.into());
+            canonical.retain(|term| term.coeff != zero);
+            canonical.sort_by(|left, right| {
+                left.sums
+                    .cmp(&right.sums)
+                    .then_with(|| left.factors.cmp(&right.factors))
+            });
+            self.computation.definitions[position].rhs = canonical;
+        }
+
+        Ok(())
     }
 }
 

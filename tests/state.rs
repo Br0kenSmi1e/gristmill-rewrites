@@ -26,6 +26,13 @@ fn one() -> Coefficient {
     Coefficient::from_integer(1.into())
 }
 
+fn factor(tensor: TensorId, indices: &[u32]) -> TensorRef {
+    TensorRef {
+        tensor,
+        indices: indices.iter().copied().map(IndexId).collect(),
+    }
+}
+
 fn valid_computation() -> Computation {
     Computation {
         ranges: BTreeSet::from([RANGE]),
@@ -90,6 +97,84 @@ fn summed_index_ids_are_local_to_each_term() {
     };
 
     State::new(computation, vec![OUTPUT]).unwrap();
+}
+
+#[test]
+fn canonicalizes_merges_and_sorts_definition_terms() {
+    let second = TensorId(2);
+    let computation = Computation {
+        ranges: BTreeSet::from([RANGE]),
+        tensors: BTreeMap::from([(INPUT, tensor(2)), (OUTPUT, tensor(2)), (second, tensor(2))]),
+        definitions: vec![TensorDef {
+            base: OUTPUT,
+            exts: vec![index(0), index(1)],
+            rhs: vec![
+                Term {
+                    sums: vec![index(7)],
+                    coeff: Coefficient::new(1.into(), 3.into()),
+                    factors: vec![factor(second, &[7, 1]), factor(INPUT, &[0, 7])],
+                },
+                Term {
+                    sums: Vec::new(),
+                    coeff: Coefficient::from_integer(4.into()),
+                    factors: vec![factor(second, &[0, 1])],
+                },
+                Term {
+                    sums: Vec::new(),
+                    coeff: Coefficient::from_integer(0.into()),
+                    factors: vec![factor(INPUT, &[0, 1])],
+                },
+                Term {
+                    sums: vec![index(9)],
+                    coeff: Coefficient::new(2.into(), 3.into()),
+                    factors: vec![factor(INPUT, &[0, 9]), factor(second, &[9, 1])],
+                },
+            ],
+        }],
+    };
+
+    let state = State::new(computation, vec![OUTPUT]).unwrap();
+
+    assert_eq!(
+        state.computation().definitions[0].rhs,
+        vec![
+            Term {
+                sums: Vec::new(),
+                coeff: Coefficient::from_integer(4.into()),
+                factors: vec![factor(second, &[0, 1])],
+            },
+            Term {
+                sums: vec![index(2)],
+                coeff: one(),
+                factors: vec![factor(INPUT, &[0, 2]), factor(second, &[2, 1])],
+            },
+        ]
+    );
+}
+
+#[test]
+fn cancels_terms_equivalent_by_symmetry() {
+    let mut computation = valid_computation();
+    computation.tensors.get_mut(&INPUT).unwrap().symmetry = vec![SymmetryGenerator {
+        perm: vec![1, 0],
+        action: SymmetryAction::Negate,
+    }];
+    computation.definitions[0].rhs = vec![
+        Term {
+            sums: Vec::new(),
+            coeff: one(),
+            factors: vec![factor(INPUT, &[0, 1])],
+        },
+        Term {
+            sums: Vec::new(),
+            coeff: one(),
+            factors: vec![factor(INPUT, &[1, 0])],
+        },
+    ];
+
+    let state = State::new(computation, vec![OUTPUT]).unwrap();
+
+    assert!(state.computation().definitions[0].rhs.is_empty());
 }
 
 #[test]
