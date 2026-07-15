@@ -4,7 +4,7 @@ use crate::{
     action::{ActionQuery, DefinitionPosition, QueryError},
     canon::{CanonError, canon_term},
     parenthesize,
-    repr::{Coefficient, Computation, Index, IndexId, Term},
+    repr::{Coefficient, Computation, Index, IndexId, TensorDef, Term},
     state::State,
 };
 use std::cmp::Ordering;
@@ -59,10 +59,19 @@ fn enumerate_splits(
     splits
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Owner {
     Left,
     Right,
+}
+
+impl Owner {
+    fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -307,6 +316,342 @@ fn compare_term(left: &Term, right: &Term) -> Ordering {
         .then_with(|| left.factors.cmp(&right.factors))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Edge {
+    coeff: Coefficient,
+    terms: BTreeSet<usize>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Graph {
+    left_exts: Vec<Index>,
+    right_exts: Vec<Index>,
+    contracted: Vec<Index>,
+    left_nodes: Vec<Term>,
+    right_nodes: Vec<Term>,
+    edges: BTreeMap<(usize, usize), Edge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Biclique {
+    left: Vec<(usize, Coefficient)>,
+    right: Vec<(usize, Coefficient)>,
+    terms: BTreeSet<usize>,
+}
+
+type GraphKey = (Owner, Vec<Index>, Vec<Index>, Vec<Index>);
+
+#[allow(dead_code)]
+fn build_graphs(
+    computation: &Computation,
+    definition: &TensorDef,
+) -> Result<Vec<Graph>, CanonError> {
+    let mut graphs = BTreeMap::<GraphKey, Graph>::new();
+
+    for (term_position, term) in definition.rhs.iter().enumerate() {
+        for split in enumerate_splits(&definition.exts, term) {
+            let Some((left_owned, right_owned)) =
+                canon_split(computation, &definition.exts, split)?
+            else {
+                continue;
+            };
+
+            insert_split(
+                &mut graphs,
+                Owner::Left,
+                definition.exts.len(),
+                term_position,
+                &term.coeff,
+                left_owned,
+            );
+            insert_split(
+                &mut graphs,
+                Owner::Right,
+                definition.exts.len(),
+                term_position,
+                &term.coeff,
+                right_owned,
+            );
+        }
+    }
+
+    for graph in graphs.values_mut() {
+        graph.edges.retain(|_, edge| edge.coeff != zero());
+    }
+    Ok(graphs
+        .into_values()
+        .filter(|graph| !graph.edges.is_empty())
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+fn insert_split(
+    graphs: &mut BTreeMap<GraphKey, Graph>,
+    owner: Owner,
+    definition_ext_count: usize,
+    term_position: usize,
+    source_coeff: &Coefficient,
+    split: (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
+) {
+    let (mut left, left_exts, mut right, right_exts, contracted) = split;
+    let coeff = source_coeff * &left.coeff * &right.coeff;
+    left.coeff = one();
+    right.coeff = one();
+
+    let left_external = left_exts
+        .iter()
+        .filter(|index| (index.id.0 as usize) < definition_ext_count)
+        .copied()
+        .collect::<Vec<_>>();
+    let right_external = right_exts
+        .iter()
+        .filter(|index| (index.id.0 as usize) < definition_ext_count)
+        .copied()
+        .collect::<Vec<_>>();
+
+    match left_external.cmp(&right_external) {
+        Ordering::Less => insert_edge(
+            graphs,
+            owner,
+            left_exts,
+            right_exts,
+            contracted,
+            left,
+            right,
+            coeff,
+            term_position,
+        ),
+        Ordering::Greater => insert_edge(
+            graphs,
+            owner.opposite(),
+            right_exts,
+            left_exts,
+            contracted,
+            right,
+            left,
+            coeff,
+            term_position,
+        ),
+        Ordering::Equal => {
+            insert_edge(
+                graphs,
+                owner,
+                left_exts.clone(),
+                right_exts.clone(),
+                contracted.clone(),
+                left.clone(),
+                right.clone(),
+                coeff.clone(),
+                term_position,
+            );
+            insert_edge(
+                graphs,
+                owner.opposite(),
+                right_exts,
+                left_exts,
+                contracted,
+                right,
+                left,
+                coeff,
+                term_position,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_edge(
+    graphs: &mut BTreeMap<GraphKey, Graph>,
+    owner: Owner,
+    left_exts: Vec<Index>,
+    right_exts: Vec<Index>,
+    contracted: Vec<Index>,
+    left: Term,
+    right: Term,
+    coeff: Coefficient,
+    term_position: usize,
+) {
+    let key = (
+        owner,
+        left_exts.clone(),
+        right_exts.clone(),
+        contracted.clone(),
+    );
+    let graph = graphs.entry(key).or_insert_with(|| Graph {
+        left_exts,
+        right_exts,
+        contracted,
+        left_nodes: Vec::new(),
+        right_nodes: Vec::new(),
+        edges: BTreeMap::new(),
+    });
+    let left = intern_node(&mut graph.left_nodes, left);
+    let right = intern_node(&mut graph.right_nodes, right);
+    let edge = graph.edges.entry((left, right)).or_insert_with(|| Edge {
+        coeff: zero(),
+        terms: BTreeSet::new(),
+    });
+
+    if edge.terms.insert(term_position) {
+        edge.coeff += coeff;
+    }
+}
+
+fn intern_node(nodes: &mut Vec<Term>, term: Term) -> usize {
+    if let Some(position) = nodes.iter().position(|node| node == &term) {
+        position
+    } else {
+        let position = nodes.len();
+        nodes.push(term);
+        position
+    }
+}
+
+#[allow(dead_code)]
+fn enumerate_bicliques(graph: &Graph) -> Vec<Biclique> {
+    let mut results = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for (&(left, right), edge) in &graph.edges {
+        let biclique = Biclique {
+            left: vec![(left, one())],
+            right: vec![(right, edge.coeff.clone())],
+            terms: edge.terms.clone(),
+        };
+        search_bicliques(graph, biclique, 0, &mut seen, &mut results);
+    }
+
+    results
+}
+
+fn search_bicliques(
+    graph: &Graph,
+    biclique: Biclique,
+    position: usize,
+    seen: &mut BTreeSet<(Vec<usize>, Vec<usize>)>,
+    results: &mut Vec<Biclique>,
+) {
+    let node_count = graph.left_nodes.len() + graph.right_nodes.len();
+    if position == node_count {
+        if (biclique.left.len() > 1 || biclique.right.len() > 1) && is_maximal(graph, &biclique) {
+            let biclique = normalize_biclique(biclique);
+            let key = (
+                biclique.left.iter().map(|(node, _)| *node).collect(),
+                biclique.right.iter().map(|(node, _)| *node).collect(),
+            );
+            if seen.insert(key) {
+                results.push(biclique);
+            }
+        }
+        return;
+    }
+
+    if position < graph.left_nodes.len() {
+        let node = position;
+        if biclique.left.iter().any(|(selected, _)| *selected == node) {
+            search_bicliques(graph, biclique, position + 1, seen, results);
+            return;
+        }
+        if let Some(next) = add_left(graph, &biclique, node) {
+            search_bicliques(graph, next, position + 1, seen, results);
+        }
+    } else {
+        let node = position - graph.left_nodes.len();
+        if biclique.right.iter().any(|(selected, _)| *selected == node) {
+            search_bicliques(graph, biclique, position + 1, seen, results);
+            return;
+        }
+        if let Some(next) = add_right(graph, &biclique, node) {
+            search_bicliques(graph, next, position + 1, seen, results);
+        }
+    }
+
+    search_bicliques(graph, biclique, position + 1, seen, results);
+}
+
+fn add_left(graph: &Graph, biclique: &Biclique, node: usize) -> Option<Biclique> {
+    let first_right = biclique.right.first()?;
+    let first_edge = graph.edges.get(&(node, first_right.0))?;
+    let coeff = &first_edge.coeff / &first_right.1;
+    let mut added_terms = BTreeSet::new();
+
+    for (right, right_coeff) in &biclique.right {
+        let edge = graph.edges.get(&(node, *right))?;
+        if edge.coeff != &coeff * right_coeff
+            || !edge.terms.is_disjoint(&biclique.terms)
+            || !edge.terms.is_disjoint(&added_terms)
+        {
+            return None;
+        }
+        added_terms.extend(&edge.terms);
+    }
+
+    let mut result = biclique.clone();
+    result.left.push((node, coeff));
+    result.terms.extend(added_terms);
+    Some(result)
+}
+
+fn add_right(graph: &Graph, biclique: &Biclique, node: usize) -> Option<Biclique> {
+    let first_left = biclique.left.first()?;
+    let first_edge = graph.edges.get(&(first_left.0, node))?;
+    let coeff = &first_edge.coeff / &first_left.1;
+    let mut added_terms = BTreeSet::new();
+
+    for (left, left_coeff) in &biclique.left {
+        let edge = graph.edges.get(&(*left, node))?;
+        if edge.coeff != left_coeff * &coeff
+            || !edge.terms.is_disjoint(&biclique.terms)
+            || !edge.terms.is_disjoint(&added_terms)
+        {
+            return None;
+        }
+        added_terms.extend(&edge.terms);
+    }
+
+    let mut result = biclique.clone();
+    result.right.push((node, coeff));
+    result.terms.extend(added_terms);
+    Some(result)
+}
+
+fn is_maximal(graph: &Graph, biclique: &Biclique) -> bool {
+    let left_maximal = (0..graph.left_nodes.len()).all(|node| {
+        biclique.left.iter().any(|(selected, _)| *selected == node)
+            || add_left(graph, biclique, node).is_none()
+    });
+    let right_maximal = (0..graph.right_nodes.len()).all(|node| {
+        biclique.right.iter().any(|(selected, _)| *selected == node)
+            || add_right(graph, biclique, node).is_none()
+    });
+    left_maximal && right_maximal
+}
+
+fn normalize_biclique(mut biclique: Biclique) -> Biclique {
+    biclique.left.sort_by_key(|(node, _)| *node);
+    biclique.right.sort_by_key(|(node, _)| *node);
+
+    let scale = biclique.left[0].1.clone();
+    for (_, coeff) in &mut biclique.left {
+        *coeff /= &scale;
+    }
+    for (_, coeff) in &mut biclique.right {
+        *coeff *= &scale;
+    }
+
+    biclique
+}
+
+fn zero() -> Coefficient {
+    Coefficient::from_integer(0.into())
+}
+
+fn one() -> Coefficient {
+    Coefficient::from_integer(1.into())
+}
+
 pub(crate) fn query(
     _state: &State,
     target: DefinitionPosition,
@@ -325,6 +670,7 @@ mod tests {
     const A: TensorId = TensorId(0);
     const B: TensorId = TensorId(1);
     const C: TensorId = TensorId(2);
+    const D: TensorId = TensorId(3);
 
     #[test]
     fn enumerates_each_unordered_factor_partition_once() {
@@ -458,6 +804,101 @@ mod tests {
         assert_eq!(contracted, &vec![index(1)]);
     }
 
+    #[test]
+    fn builds_owner_graphs_and_mirrors_equal_interfaces() {
+        let computation = tensor_computation(&[(A, 0), (B, 0), (C, 0)]);
+        let definition = TensorDef {
+            base: D,
+            exts: Vec::new(),
+            rhs: vec![
+                Term {
+                    sums: Vec::new(),
+                    coeff: integer(2),
+                    factors: vec![scalar(A), scalar(B)],
+                },
+                Term {
+                    sums: Vec::new(),
+                    coeff: integer(3),
+                    factors: vec![scalar(A), scalar(C)],
+                },
+            ],
+        };
+
+        let graphs = build_graphs(&computation, &definition).unwrap();
+
+        assert_eq!(graphs.len(), 2);
+        for graph in graphs {
+            assert!(graph.left_exts.is_empty());
+            assert!(graph.right_exts.is_empty());
+            assert!(graph.contracted.is_empty());
+            assert_eq!(graph.edges.len(), 4);
+
+            let left_a = scalar_node(&graph.left_nodes, A);
+            let left_b = scalar_node(&graph.left_nodes, B);
+            let left_c = scalar_node(&graph.left_nodes, C);
+            let right_a = scalar_node(&graph.right_nodes, A);
+            let right_b = scalar_node(&graph.right_nodes, B);
+            let right_c = scalar_node(&graph.right_nodes, C);
+
+            assert_eq!(graph.edges.get(&(left_a, right_b)), Some(&edge(2, &[0])));
+            assert_eq!(graph.edges.get(&(left_b, right_a)), Some(&edge(2, &[0])));
+            assert_eq!(graph.edges.get(&(left_a, right_c)), Some(&edge(3, &[1])));
+            assert_eq!(graph.edges.get(&(left_c, right_a)), Some(&edge(3, &[1])));
+
+            let bicliques = enumerate_bicliques(&graph);
+            assert_eq!(bicliques.len(), 2);
+            assert!(bicliques.iter().any(|biclique| {
+                biclique.left == vec![(left_a, one())]
+                    && biclique.right == vec![(right_b, integer(2)), (right_c, integer(3))]
+            }));
+        }
+    }
+
+    #[test]
+    fn enumerates_one_maximal_rank_one_rectangle() {
+        let graph = test_graph(&[
+            (0, 0, 2, &[0]),
+            (0, 1, 3, &[1]),
+            (1, 0, 4, &[2]),
+            (1, 1, 6, &[3]),
+        ]);
+
+        let bicliques = enumerate_bicliques(&graph);
+
+        assert_eq!(bicliques.len(), 1);
+        assert_eq!(bicliques[0].left, vec![(0, one()), (1, integer(2))]);
+        assert_eq!(bicliques[0].right, vec![(0, integer(2)), (1, integer(3))]);
+        assert_eq!(bicliques[0].terms, BTreeSet::from([0, 1, 2, 3]));
+    }
+
+    #[test]
+    fn rejects_a_non_rank_one_rectangle() {
+        let graph = test_graph(&[
+            (0, 0, 1, &[0]),
+            (0, 1, 1, &[1]),
+            (1, 0, 1, &[2]),
+            (1, 1, 2, &[3]),
+        ]);
+
+        let bicliques = enumerate_bicliques(&graph);
+
+        assert_eq!(bicliques.len(), 4);
+        assert!(
+            bicliques
+                .iter()
+                .all(|biclique| biclique.left.len() == 1 || biclique.right.len() == 1)
+        );
+    }
+
+    #[test]
+    fn rejects_edges_that_reuse_a_source_term() {
+        let graph = test_graph(&[(0, 0, 1, &[0]), (0, 1, 1, &[0])]);
+
+        let bicliques = enumerate_bicliques(&graph);
+
+        assert!(bicliques.is_empty());
+    }
+
     fn tensor_computation(tensors: &[(TensorId, usize)]) -> Computation {
         let mut computation = Computation::default();
         computation.ranges.insert(RANGE);
@@ -491,6 +932,52 @@ mod tests {
         term.factors.iter().map(|factor| factor.tensor).collect()
     }
 
+    fn scalar_node(nodes: &[Term], tensor: TensorId) -> usize {
+        nodes
+            .iter()
+            .position(|term| term.factors == vec![scalar(tensor)])
+            .unwrap()
+    }
+
+    fn test_graph(edges: &[(usize, usize, i64, &[usize])]) -> Graph {
+        let node_count = edges
+            .iter()
+            .map(|(left, right, _, _)| (*left).max(*right))
+            .max()
+            .unwrap()
+            + 1;
+        Graph {
+            left_exts: Vec::new(),
+            right_exts: Vec::new(),
+            contracted: Vec::new(),
+            left_nodes: (0..node_count)
+                .map(|node| unit_term(TensorId(node as u32)))
+                .collect(),
+            right_nodes: (0..node_count)
+                .map(|node| unit_term(TensorId(node as u32)))
+                .collect(),
+            edges: edges
+                .iter()
+                .map(|&(left, right, coeff, terms)| ((left, right), edge(coeff, terms)))
+                .collect(),
+        }
+    }
+
+    fn unit_term(tensor: TensorId) -> Term {
+        Term {
+            sums: Vec::new(),
+            coeff: one(),
+            factors: vec![scalar(tensor)],
+        }
+    }
+
+    fn edge(coeff: i64, terms: &[usize]) -> Edge {
+        Edge {
+            coeff: integer(coeff),
+            terms: terms.iter().copied().collect(),
+        }
+    }
+
     fn index(id: u32) -> Index {
         Index {
             id: IndexId(id),
@@ -500,5 +987,9 @@ mod tests {
 
     fn one() -> Coefficient {
         Coefficient::from_integer(1.into())
+    }
+
+    fn integer(value: i64) -> Coefficient {
+        Coefficient::from_integer(value.into())
     }
 }
