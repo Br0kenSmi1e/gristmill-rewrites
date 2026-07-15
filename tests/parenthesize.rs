@@ -1,11 +1,15 @@
 use gristmill_rewrites::{
-    Action, ActionQuery, ActionSpace, Coefficient, Computation, DefinitionPosition,
-    ParenthesizeChoiceError, ParenthesizeSpace, QueryError, State, TensorDef, TensorId, TensorInfo,
-    TensorRef, Term, TermPosition, query,
+    Action, ActionQuery, ActionSpace, Coefficient, Computation, DefinitionPosition, Index, IndexId,
+    ParenthesizeChoiceError, ParenthesizeSpace, QueryError, RangeId, State, TensorDef, TensorId,
+    TensorInfo, TensorRef, Term, TermPosition, apply, query,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 fn state_with_factor_count(factor_count: usize) -> State {
+    state_with_factor_count_and_coefficient(factor_count, 1)
+}
+
+fn state_with_factor_count_and_coefficient(factor_count: usize, coeff: i64) -> State {
     let output = TensorId(factor_count as u32);
     let tensors = (0..=factor_count)
         .map(|position| {
@@ -32,7 +36,7 @@ fn state_with_factor_count(factor_count: usize) -> State {
             exts: Vec::new(),
             rhs: vec![Term {
                 sums: Vec::new(),
-                coeff: Coefficient::from_integer(1.into()),
+                coeff: Coefficient::from_integer(coeff.into()),
                 factors,
             }],
         }],
@@ -151,5 +155,204 @@ fn validates_query_targets_and_reports_deferred_families() {
     assert_eq!(
         query(&state, permutation),
         Err(QueryError::Unsupported { query: permutation })
+    );
+}
+
+#[test]
+fn applies_one_binary_split_without_a_single_factor_alias() {
+    let state = state_with_factor_count(3);
+    let action = parenthesize_space(&state)
+        .select(&[true, true, false])
+        .unwrap();
+
+    let next = apply(&state, action).unwrap();
+
+    assert_eq!(state.computation().definitions.len(), 1);
+    assert_eq!(next.computation().definitions.len(), 2);
+    assert_eq!(
+        next.computation().definitions[0].rhs,
+        vec![Term {
+            sums: Vec::new(),
+            coeff: Coefficient::from_integer(1.into()),
+            factors: vec![
+                TensorRef {
+                    tensor: TensorId(2),
+                    indices: Vec::new(),
+                },
+                TensorRef {
+                    tensor: TensorId(4),
+                    indices: Vec::new(),
+                },
+            ],
+        }]
+    );
+    assert_eq!(
+        next.computation().definitions[1],
+        TensorDef {
+            base: TensorId(4),
+            exts: Vec::new(),
+            rhs: vec![Term {
+                sums: Vec::new(),
+                coeff: Coefficient::from_integer(1.into()),
+                factors: vec![
+                    TensorRef {
+                        tensor: TensorId(0),
+                        indices: Vec::new(),
+                    },
+                    TensorRef {
+                        tensor: TensorId(1),
+                        indices: Vec::new(),
+                    },
+                ],
+            }],
+        }
+    );
+}
+
+#[test]
+fn applies_a_split_with_two_nontrivial_children() {
+    let state = state_with_factor_count_and_coefficient(4, 6);
+    let action = parenthesize_space(&state)
+        .select(&[true, true, false, false])
+        .unwrap();
+
+    let next = apply(&state, action).unwrap();
+    let definitions = &next.computation().definitions;
+
+    assert_eq!(definitions.len(), 3);
+    assert_eq!(
+        definitions[0].rhs,
+        vec![Term {
+            sums: Vec::new(),
+            coeff: Coefficient::from_integer(6.into()),
+            factors: vec![
+                TensorRef {
+                    tensor: TensorId(5),
+                    indices: Vec::new(),
+                },
+                TensorRef {
+                    tensor: TensorId(6),
+                    indices: Vec::new(),
+                },
+            ],
+        }]
+    );
+    assert_eq!(
+        definitions[1].rhs[0].factors,
+        vec![
+            TensorRef {
+                tensor: TensorId(0),
+                indices: Vec::new(),
+            },
+            TensorRef {
+                tensor: TensorId(1),
+                indices: Vec::new(),
+            },
+        ]
+    );
+    assert_eq!(
+        definitions[2].rhs[0].factors,
+        vec![
+            TensorRef {
+                tensor: TensorId(2),
+                indices: Vec::new(),
+            },
+            TensorRef {
+                tensor: TensorId(3),
+                indices: Vec::new(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn moves_child_only_sums_into_the_intermediate() {
+    let range = RangeId(0);
+    let tensor = |rank| TensorInfo {
+        rank,
+        symmetry: Vec::new(),
+    };
+    let index = |id| Index {
+        id: IndexId(id),
+        range,
+    };
+    let computation = Computation {
+        ranges: BTreeSet::from([range]),
+        tensors: BTreeMap::from([
+            (TensorId(0), tensor(2)),
+            (TensorId(1), tensor(2)),
+            (TensorId(2), tensor(2)),
+            (TensorId(3), tensor(2)),
+        ]),
+        definitions: vec![TensorDef {
+            base: TensorId(3),
+            exts: vec![index(0), index(1)],
+            rhs: vec![Term {
+                sums: vec![index(2), index(3)],
+                coeff: Coefficient::from_integer(1.into()),
+                factors: vec![
+                    TensorRef {
+                        tensor: TensorId(0),
+                        indices: vec![IndexId(0), IndexId(2)],
+                    },
+                    TensorRef {
+                        tensor: TensorId(1),
+                        indices: vec![IndexId(2), IndexId(3)],
+                    },
+                    TensorRef {
+                        tensor: TensorId(2),
+                        indices: vec![IndexId(3), IndexId(1)],
+                    },
+                ],
+            }],
+        }],
+    };
+    let state = State::new(computation, vec![TensorId(3)]).unwrap();
+    let action = parenthesize_space(&state)
+        .select(&[true, true, false])
+        .unwrap();
+
+    let next = apply(&state, action).unwrap();
+
+    assert_eq!(
+        next.computation().definitions,
+        vec![
+            TensorDef {
+                base: TensorId(3),
+                exts: vec![index(0), index(1)],
+                rhs: vec![Term {
+                    sums: vec![index(2)],
+                    coeff: Coefficient::from_integer(1.into()),
+                    factors: vec![
+                        TensorRef {
+                            tensor: TensorId(2),
+                            indices: vec![IndexId(2), IndexId(1)],
+                        },
+                        TensorRef {
+                            tensor: TensorId(4),
+                            indices: vec![IndexId(0), IndexId(2)],
+                        },
+                    ],
+                }],
+            },
+            TensorDef {
+                base: TensorId(4),
+                exts: vec![index(0), index(1)],
+                rhs: vec![Term {
+                    sums: vec![index(2)],
+                    coeff: Coefficient::from_integer(1.into()),
+                    factors: vec![
+                        TensorRef {
+                            tensor: TensorId(0),
+                            indices: vec![IndexId(0), IndexId(2)],
+                        },
+                        TensorRef {
+                            tensor: TensorId(1),
+                            indices: vec![IndexId(2), IndexId(1)],
+                        },
+                    ],
+                }],
+            },
+        ]
     );
 }

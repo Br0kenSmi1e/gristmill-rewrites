@@ -123,11 +123,14 @@ impl State {
     /// `candidate.base` is ignored. The returned coefficient and tensor
     /// reference are expressed in the candidate's index scope. Protected
     /// outputs are not eligible for reuse.
-    #[allow(dead_code)] // Used by the transition implementation built next.
     pub(crate) fn add_intermediate(
         &mut self,
         mut candidate: TensorDef,
     ) -> Result<(Coefficient, TensorRef), StateError> {
+        if let Some(alias) = trivial_alias(&candidate) {
+            return Ok(alias);
+        }
+
         let exts = candidate.exts.clone();
         let mut insertion = None;
 
@@ -189,7 +192,6 @@ impl State {
     }
 
     /// Replace selected terms and recanonicalize their definition.
-    #[allow(dead_code)] // Used by the transition implementation built next.
     pub(crate) fn replace_terms(
         &mut self,
         definition: usize,
@@ -238,6 +240,33 @@ impl State {
 
         Ok(())
     }
+}
+
+fn trivial_alias(candidate: &TensorDef) -> Option<(Coefficient, TensorRef)> {
+    let [term] = candidate.rhs.as_slice() else {
+        return None;
+    };
+    let [factor] = term.factors.as_slice() else {
+        return None;
+    };
+    if !term.sums.is_empty() || term.coeff == Coefficient::from_integer(0.into()) {
+        return None;
+    }
+
+    let exts = candidate
+        .exts
+        .iter()
+        .map(|index| index.id)
+        .collect::<BTreeSet<_>>();
+    let indices = factor.indices.iter().copied().collect::<BTreeSet<_>>();
+    if exts.len() != candidate.exts.len()
+        || indices.len() != factor.indices.len()
+        || exts != indices
+    {
+        return None;
+    }
+
+    Some((term.coeff.clone(), factor.clone()))
 }
 
 fn permutations(len: usize) -> Vec<Vec<usize>> {
@@ -596,6 +625,23 @@ mod mutation_tests {
         }
     }
 
+    fn product_term(coeff: i64, indices: [u32; 2]) -> Term {
+        Term {
+            sums: Vec::new(),
+            coeff: Coefficient::from_integer(coeff.into()),
+            factors: vec![
+                TensorRef {
+                    tensor: INPUT,
+                    indices: indices.into_iter().map(IndexId).collect(),
+                },
+                TensorRef {
+                    tensor: INPUT,
+                    indices: indices.into_iter().map(IndexId).collect(),
+                },
+            ],
+        }
+    }
+
     #[test]
     fn adds_canonical_intermediate_then_reuses_it() {
         let computation = Computation {
@@ -613,7 +659,7 @@ mod mutation_tests {
             .add_intermediate(TensorDef {
                 base: INTERMEDIATE,
                 exts: vec![index(0), index(1)],
-                rhs: vec![term(6, [0, 1])],
+                rhs: vec![product_term(6, [0, 1])],
             })
             .unwrap();
 
@@ -621,13 +667,16 @@ mod mutation_tests {
         assert_eq!(factor.tensor, OUTPUT);
         assert_eq!(factor.indices, vec![IndexId(0), IndexId(1)]);
         assert_eq!(state.computation.definitions.len(), 2);
-        assert_eq!(state.computation.definitions[1].rhs, vec![term(1, [0, 1])]);
+        assert_eq!(
+            state.computation.definitions[1].rhs,
+            vec![product_term(1, [0, 1])]
+        );
 
         let (coeff, factor) = state
             .add_intermediate(TensorDef {
                 base: INTERMEDIATE,
                 exts: vec![index(0), index(1)],
-                rhs: vec![term(12, [1, 0])],
+                rhs: vec![product_term(12, [1, 0])],
             })
             .unwrap();
 
@@ -650,7 +699,7 @@ mod mutation_tests {
                 TensorDef {
                     base: INTERMEDIATE,
                     exts: vec![index(0), index(1)],
-                    rhs: vec![term(2, [1, 0])],
+                    rhs: vec![product_term(2, [1, 0])],
                 },
                 TensorDef {
                     base: OUTPUT,
@@ -665,7 +714,7 @@ mod mutation_tests {
             .add_intermediate(TensorDef {
                 base: OUTPUT,
                 exts: vec![index(0), index(1)],
-                rhs: vec![term(6, [0, 1])],
+                rhs: vec![product_term(6, [0, 1])],
             })
             .unwrap();
 
