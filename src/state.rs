@@ -1,7 +1,7 @@
 //! Validated symbolic rewrite state with canonical definition terms.
 
-use crate::canon::{CanonError, canon_term};
-use crate::repr::{Coefficient, Computation, IndexId, RangeId, TensorId, Term};
+use crate::canon::{CanonError, canon_expr};
+use crate::repr::{Computation, IndexId, RangeId, TensorId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A validation or canonicalization failure while constructing a [`State`].
@@ -108,31 +108,10 @@ impl State {
 
     fn canonicalize_definitions(&mut self) -> Result<(), CanonError> {
         for position in 0..self.computation.definitions.len() {
-            let mut canonical = Vec::<Term>::new();
-            {
+            let canonical = {
                 let definition = &self.computation.definitions[position];
-                for term in &definition.rhs {
-                    let Some(term) = canon_term(&self.computation, &definition.exts, term)? else {
-                        continue;
-                    };
-
-                    if let Some(existing) = canonical.iter_mut().find(|existing| {
-                        existing.sums == term.sums && existing.factors == term.factors
-                    }) {
-                        existing.coeff += term.coeff;
-                    } else {
-                        canonical.push(term);
-                    }
-                }
-            }
-
-            let zero = Coefficient::from_integer(0.into());
-            canonical.retain(|term| term.coeff != zero);
-            canonical.sort_by(|left, right| {
-                left.sums
-                    .cmp(&right.sums)
-                    .then_with(|| left.factors.cmp(&right.factors))
-            });
+                canon_expr(&self.computation, &definition.exts, &definition.rhs)?
+            };
             self.computation.definitions[position].rhs = canonical;
         }
 

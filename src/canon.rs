@@ -99,6 +99,42 @@ pub fn canon_term(
     }))
 }
 
+/// Canonicalize a linear expression while preserving its fixed indices.
+///
+/// Terms are canonicalized with [`canon_term`], equal term bodies are merged,
+/// zero terms are removed, and the result is sorted deterministically.
+pub fn canon_expr(
+    computation: &Computation,
+    fixed_indices: &[Index],
+    terms: &[Term],
+) -> Result<Vec<Term>, CanonError> {
+    let mut canonical = Vec::<Term>::new();
+
+    for term in terms {
+        let Some(term) = canon_term(computation, fixed_indices, term)? else {
+            continue;
+        };
+
+        if let Some(existing) = canonical
+            .iter_mut()
+            .find(|existing| existing.sums == term.sums && existing.factors == term.factors)
+        {
+            existing.coeff += term.coeff;
+        } else {
+            canonical.push(term);
+        }
+    }
+
+    canonical.retain(|term| !is_zero(&term.coeff));
+    canonical.sort_by(|left, right| {
+        left.sums
+            .cmp(&right.sums)
+            .then_with(|| left.factors.cmp(&right.factors))
+    });
+
+    Ok(canonical)
+}
+
 struct TermContext {
     fixed_ids: BTreeSet<IndexId>,
     sum_ranges: BTreeMap<IndexId, RangeId>,

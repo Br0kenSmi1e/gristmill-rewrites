@@ -1,4 +1,4 @@
-use gristmill_rewrites::canon::{CanonError, canon_term};
+use gristmill_rewrites::canon::{CanonError, canon_expr, canon_term};
 use gristmill_rewrites::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator, TensorId,
     TensorInfo, TensorRef, Term,
@@ -82,6 +82,54 @@ fn canonicalizes_factor_order_and_summed_index_ids() {
     });
     assert_eq!(first, expected);
     assert_eq!(renamed, expected);
+}
+
+#[test]
+fn canonicalizes_a_linear_expression() {
+    let computation = make_computation([(A, tensor(2)), (B, tensor(2))]);
+    let terms = vec![
+        Term {
+            sums: Vec::new(),
+            coeff: rational(4, 1),
+            factors: vec![factor(B, &[0, 1])],
+        },
+        Term {
+            sums: Vec::new(),
+            coeff: rational(2, 1),
+            factors: vec![factor(A, &[0, 1])],
+        },
+        Term {
+            sums: Vec::new(),
+            coeff: rational(3, 1),
+            factors: vec![factor(A, &[0, 1])],
+        },
+        Term {
+            sums: Vec::new(),
+            coeff: rational(1, 1),
+            factors: vec![factor(B, &[1, 0])],
+        },
+        Term {
+            sums: Vec::new(),
+            coeff: rational(-1, 1),
+            factors: vec![factor(B, &[1, 0])],
+        },
+    ];
+
+    assert_eq!(
+        canon_expr(&computation, &[index(0, R0), index(1, R0)], &terms),
+        Ok(vec![
+            Term {
+                sums: Vec::new(),
+                coeff: rational(5, 1),
+                factors: vec![factor(A, &[0, 1])],
+            },
+            Term {
+                sums: Vec::new(),
+                coeff: rational(4, 1),
+                factors: vec![factor(B, &[0, 1])],
+            },
+        ])
+    );
 }
 
 #[test]
