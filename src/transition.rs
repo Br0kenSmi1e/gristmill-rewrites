@@ -2,7 +2,7 @@
 
 use crate::{
     action::{Action, ActionQuery},
-    parenthesize,
+    parenthesize, permutation,
     state::{State, StateError},
 };
 
@@ -20,7 +20,8 @@ pub fn apply(state: &State, action: Action) -> Result<State, ApplyError> {
 
     match action {
         Action::Parenthesize(action) => parenthesize::apply(&mut next, action)?,
-        Action::Biclique(_) | Action::Permutation(_) => {
+        Action::Permutation(action) => permutation::apply(&mut next, action)?,
+        Action::Biclique(_) => {
             return Err(ApplyError::Unsupported { query });
         }
     }

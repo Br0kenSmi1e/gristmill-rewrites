@@ -12,7 +12,7 @@ pub mod transition;
 pub use action::{
     Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueSpace, DefinitionPosition,
     ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace, PermutationAction,
-    PermutationSpace, QueryError, TermPosition, query,
+    PermutationChoiceError, PermutationSpace, QueryError, TermPosition, query,
 };
 pub use repr::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator,

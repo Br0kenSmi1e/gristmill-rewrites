@@ -152,10 +152,10 @@ fn validates_query_targets_and_reports_deferred_families() {
     );
 
     let permutation = ActionQuery::PermutationFactor(DefinitionPosition(0));
-    assert_eq!(
-        query(&state, permutation),
-        Err(QueryError::Unsupported { query: permutation })
-    );
+    let ActionSpace::Permutation(space) = query(&state, permutation).unwrap() else {
+        panic!("expected a permutation space");
+    };
+    assert_eq!(space.candidate_count(), 0);
 }
 
 #[test]
