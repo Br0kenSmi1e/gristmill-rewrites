@@ -40,14 +40,14 @@ pub struct TensorInfo {
 }
 
 /// An index declaration in a definition or term.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Index {
     pub id: IndexId,
     pub range: RangeId,
 }
 
 /// One indexed occurrence of a tensor.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TensorRef {
     pub tensor: TensorId,
     pub indices: Vec<IndexId>,

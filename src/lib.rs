@@ -1,6 +1,7 @@
 //! Cost-free symbolic rewrite environment.
 
 pub mod action;
+pub mod canon;
 pub mod repr;
 pub mod state;
 pub mod transition;
