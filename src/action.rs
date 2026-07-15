@@ -44,6 +44,7 @@ impl ActionSpace {
 }
 
 /// One validated policy choice.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Parenthesize(ParenthesizeAction),

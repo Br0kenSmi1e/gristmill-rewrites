@@ -39,68 +39,21 @@ impl ParenthesizeSpace {
             }
         }
 
-        let (left_factors, right_factors) = split_factors(&self.term.factors, &left);
-        let left_sums = self
-            .term
-            .sums
-            .iter()
-            .filter(|index| {
-                uses_index(&left_factors, index.id) && !uses_index(&right_factors, index.id)
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        let right_sums = self
-            .term
-            .sums
-            .iter()
-            .filter(|index| {
-                uses_index(&right_factors, index.id) && !uses_index(&left_factors, index.id)
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        let outer_sums = self
-            .term
-            .sums
-            .iter()
-            .filter(|index| !left_sums.contains(index) && !right_sums.contains(index))
-            .copied()
-            .collect::<Vec<_>>();
+        let (left_term, left_exts, right_term, right_exts, outer_sums) =
+            select(&self.exts, &self.term, &left);
 
-        let left_exts = self
-            .exts
-            .iter()
-            .chain(&self.term.sums)
-            .filter(|index| uses_index(&left_factors, index.id) && !left_sums.contains(index))
-            .copied()
-            .collect();
-        let right_exts = self
-            .exts
-            .iter()
-            .chain(&self.term.sums)
-            .filter(|index| uses_index(&right_factors, index.id) && !right_sums.contains(index))
-            .copied()
-            .collect();
-
-        let children = Box::new([
+        let children = (
             TensorDef {
                 base: self.base,
                 exts: left_exts,
-                rhs: vec![Term {
-                    sums: left_sums,
-                    coeff: Coefficient::from_integer(1.into()),
-                    factors: left_factors,
-                }],
+                rhs: vec![left_term],
             },
             TensorDef {
                 base: self.base,
                 exts: right_exts,
-                rhs: vec![Term {
-                    sums: right_sums,
-                    coeff: Coefficient::from_integer(1.into()),
-                    factors: right_factors,
-                }],
+                rhs: vec![right_term],
             },
-        ]);
+        );
 
         Ok(Action::Parenthesize(ParenthesizeAction {
             target: self.target,
@@ -124,7 +77,7 @@ pub enum ParenthesizeChoiceError {
 pub struct ParenthesizeAction {
     target: TermPosition,
     left: Box<[bool]>,
-    children: Box<[TensorDef; 2]>,
+    children: (TensorDef, TensorDef),
     outer_sums: Vec<Index>,
     coeff: Coefficient,
 }
@@ -161,7 +114,7 @@ pub(crate) fn query(state: &State, target: TermPosition) -> Result<ParenthesizeS
 }
 
 pub(crate) fn apply(state: &mut State, action: ParenthesizeAction) -> Result<(), StateError> {
-    let [left, right] = *action.children;
+    let (left, right) = action.children;
     let (left_coeff, left_ref) = state.add_intermediate(left)?;
     let (right_coeff, right_ref) = state.add_intermediate(right)?;
 
@@ -177,6 +130,64 @@ pub(crate) fn apply(state: &mut State, action: ParenthesizeAction) -> Result<(),
     )?;
 
     Ok(())
+}
+
+pub(crate) fn select(
+    exts: &[Index],
+    term: &Term,
+    left: &[bool],
+) -> (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>) {
+    let (left_factors, right_factors) = split_factors(&term.factors, left);
+    let left_sums = term
+        .sums
+        .iter()
+        .filter(|index| {
+            uses_index(&left_factors, index.id) && !uses_index(&right_factors, index.id)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let right_sums = term
+        .sums
+        .iter()
+        .filter(|index| {
+            uses_index(&right_factors, index.id) && !uses_index(&left_factors, index.id)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let contracted = term
+        .sums
+        .iter()
+        .filter(|index| !left_sums.contains(index) && !right_sums.contains(index))
+        .copied()
+        .collect::<Vec<_>>();
+    let left_exts = exts
+        .iter()
+        .chain(&contracted)
+        .filter(|index| uses_index(&left_factors, index.id))
+        .copied()
+        .collect();
+    let right_exts = exts
+        .iter()
+        .chain(&contracted)
+        .filter(|index| uses_index(&right_factors, index.id))
+        .copied()
+        .collect();
+
+    (
+        Term {
+            sums: left_sums,
+            coeff: Coefficient::from_integer(1.into()),
+            factors: left_factors,
+        },
+        left_exts,
+        Term {
+            sums: right_sums,
+            coeff: Coefficient::from_integer(1.into()),
+            factors: right_factors,
+        },
+        right_exts,
+        contracted,
+    )
 }
 
 fn split_factors(factors: &[TensorRef], left: &[bool]) -> (Vec<TensorRef>, Vec<TensorRef>) {
