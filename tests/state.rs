@@ -9,9 +9,13 @@ const INPUT: TensorId = TensorId(0);
 const OUTPUT: TensorId = TensorId(1);
 
 fn index(id: u32) -> Index {
+    index_in_range(id, RANGE)
+}
+
+fn index_in_range(id: u32, range: RangeId) -> Index {
     Index {
         id: IndexId(id),
-        range: RANGE,
+        range,
     }
 }
 
@@ -150,6 +154,87 @@ fn canonicalizes_merges_and_sorts_definition_terms() {
             },
         ]
     );
+}
+
+#[test]
+fn normalizes_definition_local_index_ids() {
+    let second_range = RangeId(1);
+    let second = TensorId(2);
+    let computation = Computation {
+        ranges: BTreeSet::from([RANGE, second_range]),
+        tensors: BTreeMap::from([(INPUT, tensor(2)), (OUTPUT, tensor(2)), (second, tensor(2))]),
+        definitions: vec![
+            TensorDef {
+                base: OUTPUT,
+                exts: vec![index(10), index_in_range(20, second_range)],
+                rhs: vec![Term {
+                    sums: vec![index(30)],
+                    coeff: one(),
+                    factors: vec![factor(INPUT, &[10, 30]), factor(INPUT, &[30, 20])],
+                }],
+            },
+            TensorDef {
+                base: second,
+                exts: vec![index(7), index_in_range(9, second_range)],
+                rhs: vec![Term {
+                    sums: vec![index(0)],
+                    coeff: one(),
+                    factors: vec![factor(INPUT, &[7, 0]), factor(INPUT, &[0, 9])],
+                }],
+            },
+        ],
+    };
+
+    let state = State::new(computation, vec![OUTPUT, second]).unwrap();
+    let first = &state.computation().definitions[0];
+    let second = &state.computation().definitions[1];
+
+    assert_eq!(first.exts, vec![index(0), index_in_range(1, second_range)]);
+    assert_eq!(first.exts, second.exts);
+    assert_eq!(first.rhs, second.rhs);
+    assert_eq!(first.rhs[0].sums, vec![index(2)]);
+
+    let (computation, outputs) = state.into_parts();
+    let expected = computation.clone();
+    assert_eq!(
+        State::new(computation, outputs).unwrap().computation(),
+        &expected
+    );
+}
+
+#[test]
+fn preserves_external_slot_order() {
+    let second = TensorId(2);
+    let computation = Computation {
+        ranges: BTreeSet::from([RANGE]),
+        tensors: BTreeMap::from([(INPUT, tensor(2)), (OUTPUT, tensor(2)), (second, tensor(2))]),
+        definitions: vec![
+            TensorDef {
+                base: OUTPUT,
+                exts: vec![index(10), index(20)],
+                rhs: vec![Term {
+                    sums: Vec::new(),
+                    coeff: one(),
+                    factors: vec![factor(INPUT, &[10, 20])],
+                }],
+            },
+            TensorDef {
+                base: second,
+                exts: vec![index(7), index(9)],
+                rhs: vec![Term {
+                    sums: Vec::new(),
+                    coeff: one(),
+                    factors: vec![factor(INPUT, &[9, 7])],
+                }],
+            },
+        ],
+    };
+
+    let state = State::new(computation, vec![OUTPUT, second]).unwrap();
+    let definitions = &state.computation().definitions;
+
+    assert_eq!(definitions[0].exts, definitions[1].exts);
+    assert_ne!(definitions[0].rhs, definitions[1].rhs);
 }
 
 #[test]
