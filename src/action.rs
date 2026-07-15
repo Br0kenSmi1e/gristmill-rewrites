@@ -1,8 +1,8 @@
 //! Shared symbolic rewrite query and action API.
 
-use crate::{biclique, parenthesize, permutation, state::State};
+use crate::{biclique, canon::CanonError, parenthesize, permutation, state::State};
 
-pub use crate::biclique::{BicliqueAction, BicliqueSpace};
+pub use crate::biclique::{BicliqueAction, BicliqueChoiceError, BicliqueSpace};
 pub use crate::parenthesize::{ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace};
 pub use crate::permutation::{PermutationAction, PermutationChoiceError, PermutationSpace};
 
@@ -63,11 +63,11 @@ impl Action {
 }
 
 /// Failure to construct an action space for a query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryError {
     DefinitionOutOfBounds { position: DefinitionPosition },
     TermOutOfBounds { position: TermPosition },
-    Unsupported { query: ActionQuery },
+    Canonicalization(CanonError),
 }
 
 /// Query the legal actions for one rewrite family at one typed target.

@@ -10,9 +10,9 @@ pub mod state;
 pub mod transition;
 
 pub use action::{
-    Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueSpace, DefinitionPosition,
-    ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace, PermutationAction,
-    PermutationChoiceError, PermutationSpace, QueryError, TermPosition, query,
+    Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueChoiceError, BicliqueSpace,
+    DefinitionPosition, ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace,
+    PermutationAction, PermutationChoiceError, PermutationSpace, QueryError, TermPosition, query,
 };
 pub use repr::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator,

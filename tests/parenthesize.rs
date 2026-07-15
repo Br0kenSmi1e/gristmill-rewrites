@@ -121,7 +121,7 @@ fn validates_parenthesization_choices() {
 }
 
 #[test]
-fn validates_query_targets_and_reports_deferred_families() {
+fn validates_query_targets() {
     let state = state_with_factor_count(3);
     let missing_definition = TermPosition {
         definition: DefinitionPosition(4),
@@ -146,10 +146,10 @@ fn validates_query_targets_and_reports_deferred_families() {
     );
 
     let biclique = ActionQuery::BicliqueFactor(DefinitionPosition(0));
-    assert_eq!(
-        query(&state, biclique),
-        Err(QueryError::Unsupported { query: biclique })
-    );
+    let ActionSpace::Biclique(space) = query(&state, biclique).unwrap() else {
+        panic!("expected a biclique space");
+    };
+    assert_eq!(space.candidate_count(), 0);
 
     let permutation = ActionQuery::PermutationFactor(DefinitionPosition(0));
     let ActionSpace::Permutation(space) = query(&state, permutation).unwrap() else {
