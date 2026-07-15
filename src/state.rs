@@ -1,7 +1,10 @@
 //! Validated symbolic rewrite state with canonical definition terms.
 
 use crate::canon::{CanonError, canon_expr};
-use crate::repr::{Computation, Index, IndexId, RangeId, TensorDef, TensorId, TensorRef, Term};
+use crate::repr::{
+    Coefficient, Computation, Index, IndexId, RangeId, TensorDef, TensorId, TensorInfo, TensorRef,
+    Term,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A validation or canonicalization failure while constructing a [`State`].
@@ -63,6 +66,8 @@ pub enum StateError {
     DependencyCycle {
         tensor: TensorId,
     },
+    ZeroIntermediate,
+    ExhaustedTensorIds,
     Canonicalization(CanonError),
 }
 
@@ -106,6 +111,76 @@ impl State {
         (self.computation, self.protected_outputs)
     }
 
+    /// Return a reference to an equivalent intermediate, adding one if needed.
+    ///
+    /// `candidate.base` is ignored. The returned coefficient and tensor
+    /// reference are expressed in the candidate's index scope. Protected
+    /// outputs are not eligible for reuse.
+    #[allow(dead_code)] // Used by the transition implementation built next.
+    pub(crate) fn add_intermediate(
+        &mut self,
+        mut candidate: TensorDef,
+    ) -> Result<(Coefficient, TensorRef), StateError> {
+        let exts = candidate.exts.clone();
+        let mut insertion = None;
+
+        for permutation in permutations(exts.len()) {
+            candidate.exts = permutation.iter().map(|&position| exts[position]).collect();
+            let canonical = canonicalize_definition(&self.computation, &candidate)
+                .map_err(StateError::Canonicalization)?;
+
+            if permutation.iter().copied().eq(0..exts.len()) {
+                insertion = Some(canonical.clone());
+            }
+
+            for existing in &self.computation.definitions {
+                if self.protected_outputs.contains(&existing.base) {
+                    continue;
+                }
+                if canonical.exts != existing.exts {
+                    continue;
+                }
+                if let Some(coeff) = proportional_rhs(&canonical.rhs, &existing.rhs) {
+                    return Ok((
+                        coeff,
+                        TensorRef {
+                            tensor: existing.base,
+                            indices: candidate.exts.iter().map(|index| index.id).collect(),
+                        },
+                    ));
+                }
+            }
+        }
+
+        let mut definition = insertion.expect("the identity permutation is always generated");
+        let Some(first) = definition.rhs.first() else {
+            return Err(StateError::ZeroIntermediate);
+        };
+        let coeff = first.coeff.clone();
+        for term in &mut definition.rhs {
+            term.coeff = term.coeff.clone() / coeff.clone();
+        }
+
+        let tensor = fresh_tensor_id(&self.computation)?;
+        definition.base = tensor;
+        self.computation.tensors.insert(
+            tensor,
+            TensorInfo {
+                rank: definition.exts.len(),
+                symmetry: Vec::new(),
+            },
+        );
+        self.computation.definitions.push(definition);
+
+        Ok((
+            coeff,
+            TensorRef {
+                tensor,
+                indices: exts.iter().map(|index| index.id).collect(),
+            },
+        ))
+    }
+
     fn canonicalize_definitions(&mut self) -> Result<(), CanonError> {
         for position in 0..self.computation.definitions.len() {
             let canonical = {
@@ -117,6 +192,59 @@ impl State {
 
         Ok(())
     }
+}
+
+fn permutations(len: usize) -> Vec<Vec<usize>> {
+    fn generate(position: usize, current: &mut [usize], result: &mut Vec<Vec<usize>>) {
+        if position == current.len() {
+            result.push(current.to_vec());
+            return;
+        }
+        for next in position..current.len() {
+            current.swap(position, next);
+            generate(position + 1, current, result);
+            current.swap(position, next);
+        }
+    }
+
+    let mut current = (0..len).collect::<Vec<_>>();
+    let mut result = Vec::new();
+    generate(0, &mut current, &mut result);
+    result
+}
+
+fn proportional_rhs(candidate: &[Term], existing: &[Term]) -> Option<Coefficient> {
+    let (Some(candidate_first), Some(existing_first)) = (candidate.first(), existing.first())
+    else {
+        return None;
+    };
+    if candidate.len() != existing.len() {
+        return None;
+    }
+
+    let coeff = candidate_first.coeff.clone() / existing_first.coeff.clone();
+    candidate
+        .iter()
+        .zip(existing)
+        .all(|(candidate, existing)| {
+            candidate.sums == existing.sums
+                && candidate.factors == existing.factors
+                && candidate.coeff == existing.coeff.clone() * coeff.clone()
+        })
+        .then_some(coeff)
+}
+
+fn fresh_tensor_id(computation: &Computation) -> Result<TensorId, StateError> {
+    let mut candidate = 0;
+    for tensor in computation.tensors.keys() {
+        if tensor.0 > candidate {
+            break;
+        }
+        candidate = candidate
+            .checked_add(1)
+            .ok_or(StateError::ExhaustedTensorIds)?;
+    }
+    Ok(TensorId(candidate))
 }
 
 fn canonicalize_definition(
@@ -386,4 +514,141 @@ fn visit_definition(
     }
     visits.insert(tensor, Visit::Complete);
     Ok(())
+}
+
+#[cfg(test)]
+mod intermediate_tests {
+    use super::*;
+
+    const INPUT: TensorId = TensorId(0);
+    const INTERMEDIATE: TensorId = TensorId(1);
+    const OUTPUT: TensorId = TensorId(2);
+    const RANGE: RangeId = RangeId(0);
+
+    fn index(id: u32) -> Index {
+        Index {
+            id: IndexId(id),
+            range: RANGE,
+        }
+    }
+
+    fn tensor() -> TensorInfo {
+        TensorInfo {
+            rank: 2,
+            symmetry: Vec::new(),
+        }
+    }
+
+    fn term(coeff: i64, indices: [u32; 2]) -> Term {
+        Term {
+            sums: Vec::new(),
+            coeff: Coefficient::from_integer(coeff.into()),
+            factors: vec![TensorRef {
+                tensor: INPUT,
+                indices: indices.into_iter().map(IndexId).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn adds_canonical_intermediate_then_reuses_it() {
+        let computation = Computation {
+            ranges: BTreeSet::from([RANGE]),
+            tensors: BTreeMap::from([(INPUT, tensor()), (INTERMEDIATE, tensor())]),
+            definitions: vec![TensorDef {
+                base: INTERMEDIATE,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(1, [0, 1])],
+            }],
+        };
+        let mut state = State::new(computation, vec![INTERMEDIATE]).unwrap();
+
+        let (coeff, factor) = state
+            .add_intermediate(TensorDef {
+                base: INTERMEDIATE,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(6, [0, 1])],
+            })
+            .unwrap();
+
+        assert_eq!(coeff, Coefficient::from_integer(6.into()));
+        assert_eq!(factor.tensor, OUTPUT);
+        assert_eq!(factor.indices, vec![IndexId(0), IndexId(1)]);
+        assert_eq!(state.computation.definitions.len(), 2);
+        assert_eq!(state.computation.definitions[1].rhs, vec![term(1, [0, 1])]);
+
+        let (coeff, factor) = state
+            .add_intermediate(TensorDef {
+                base: INTERMEDIATE,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(12, [1, 0])],
+            })
+            .unwrap();
+
+        assert_eq!(coeff, Coefficient::from_integer(12.into()));
+        assert_eq!(factor.tensor, OUTPUT);
+        assert_eq!(factor.indices, vec![IndexId(1), IndexId(0)]);
+        assert_eq!(state.computation.definitions.len(), 2);
+    }
+
+    #[test]
+    fn reuses_with_coefficient_and_external_permutation() {
+        let computation = Computation {
+            ranges: BTreeSet::from([RANGE]),
+            tensors: BTreeMap::from([
+                (INPUT, tensor()),
+                (INTERMEDIATE, tensor()),
+                (OUTPUT, tensor()),
+            ]),
+            definitions: vec![
+                TensorDef {
+                    base: INTERMEDIATE,
+                    exts: vec![index(0), index(1)],
+                    rhs: vec![term(2, [1, 0])],
+                },
+                TensorDef {
+                    base: OUTPUT,
+                    exts: vec![index(0), index(1)],
+                    rhs: vec![term(1, [0, 1])],
+                },
+            ],
+        };
+        let mut state = State::new(computation, vec![OUTPUT]).unwrap();
+
+        let (coeff, factor) = state
+            .add_intermediate(TensorDef {
+                base: OUTPUT,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(6, [0, 1])],
+            })
+            .unwrap();
+
+        assert_eq!(coeff, Coefficient::from_integer(3.into()));
+        assert_eq!(factor.tensor, INTERMEDIATE);
+        assert_eq!(factor.indices, vec![IndexId(1), IndexId(0)]);
+        assert_eq!(state.computation.definitions.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_zero_intermediate() {
+        let computation = Computation {
+            ranges: BTreeSet::from([RANGE]),
+            tensors: BTreeMap::from([(INPUT, tensor()), (INTERMEDIATE, tensor())]),
+            definitions: vec![TensorDef {
+                base: INTERMEDIATE,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(1, [0, 1])],
+            }],
+        };
+        let mut state = State::new(computation, vec![INTERMEDIATE]).unwrap();
+
+        assert_eq!(
+            state.add_intermediate(TensorDef {
+                base: INTERMEDIATE,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(0, [0, 1])],
+            }),
+            Err(StateError::ZeroIntermediate)
+        );
+    }
 }
