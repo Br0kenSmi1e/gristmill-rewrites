@@ -66,6 +66,13 @@ pub enum StateError {
     DependencyCycle {
         tensor: TensorId,
     },
+    DefinitionOutOfBounds {
+        position: usize,
+    },
+    TermOutOfBounds {
+        definition: usize,
+        term: usize,
+    },
     ZeroIntermediate,
     ExhaustedTensorIds,
     Canonicalization(CanonError),
@@ -179,6 +186,45 @@ impl State {
                 indices: exts.iter().map(|index| index.id).collect(),
             },
         ))
+    }
+
+    /// Replace selected terms and recanonicalize their definition.
+    #[allow(dead_code)] // Used by the transition implementation built next.
+    pub(crate) fn replace_terms(
+        &mut self,
+        definition: usize,
+        removed: &[usize],
+        replacements: Vec<Term>,
+    ) -> Result<(), StateError> {
+        let mut updated = self
+            .computation
+            .definitions
+            .get(definition)
+            .cloned()
+            .ok_or(StateError::DefinitionOutOfBounds {
+                position: definition,
+            })?;
+
+        let mut remove = vec![false; updated.rhs.len()];
+        for &term in removed {
+            let selected = remove
+                .get_mut(term)
+                .ok_or(StateError::TermOutOfBounds { definition, term })?;
+            *selected = true;
+        }
+
+        updated.rhs = updated
+            .rhs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, term)| (!remove[position]).then_some(term))
+            .chain(replacements)
+            .collect();
+        let updated = canonicalize_definition(&self.computation, &updated)
+            .map_err(StateError::Canonicalization)?;
+        self.computation.definitions[definition] = updated;
+
+        Ok(())
     }
 
     fn canonicalize_definitions(&mut self) -> Result<(), CanonError> {
@@ -517,7 +563,7 @@ fn visit_definition(
 }
 
 #[cfg(test)]
-mod intermediate_tests {
+mod mutation_tests {
     use super::*;
 
     const INPUT: TensorId = TensorId(0);
@@ -650,5 +696,55 @@ mod intermediate_tests {
             }),
             Err(StateError::ZeroIntermediate)
         );
+    }
+
+    #[test]
+    fn replaces_terms_and_recanonicalizes_the_definition() {
+        let computation = Computation {
+            ranges: BTreeSet::from([RANGE]),
+            tensors: BTreeMap::from([(INPUT, tensor()), (OUTPUT, tensor())]),
+            definitions: vec![TensorDef {
+                base: OUTPUT,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(1, [0, 1]), term(1, [1, 0])],
+            }],
+        };
+        let mut state = State::new(computation, vec![OUTPUT]).unwrap();
+
+        state
+            .replace_terms(0, &[0, 1], vec![term(2, [1, 0]), term(3, [1, 0])])
+            .unwrap();
+
+        assert_eq!(state.computation.definitions[0].rhs, vec![term(5, [1, 0])]);
+    }
+
+    #[test]
+    fn rejects_invalid_replacement_positions_without_changing_state() {
+        let computation = Computation {
+            ranges: BTreeSet::from([RANGE]),
+            tensors: BTreeMap::from([(INPUT, tensor()), (OUTPUT, tensor())]),
+            definitions: vec![TensorDef {
+                base: OUTPUT,
+                exts: vec![index(0), index(1)],
+                rhs: vec![term(1, [0, 1])],
+            }],
+        };
+        let mut state = State::new(computation, vec![OUTPUT]).unwrap();
+        let original = state.clone();
+
+        assert_eq!(
+            state.replace_terms(1, &[], Vec::new()),
+            Err(StateError::DefinitionOutOfBounds { position: 1 })
+        );
+        assert_eq!(state, original);
+
+        assert_eq!(
+            state.replace_terms(0, &[1], Vec::new()),
+            Err(StateError::TermOutOfBounds {
+                definition: 0,
+                term: 1,
+            })
+        );
+        assert_eq!(state, original);
     }
 }
