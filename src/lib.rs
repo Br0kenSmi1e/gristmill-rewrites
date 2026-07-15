@@ -1,13 +1,18 @@
 //! Cost-free symbolic rewrite environment.
 
 pub mod action;
+mod biclique;
 pub mod canon;
+mod parenthesize;
+mod permutation;
 pub mod repr;
 pub mod state;
 pub mod transition;
 
 pub use action::{
-    Action, ActionQuery, ActionSpace, DefinitionPosition, QueryError, TermPosition, query,
+    Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueSpace, DefinitionPosition,
+    ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace, PermutationAction,
+    PermutationSpace, QueryError, TermPosition, query,
 };
 pub use repr::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator,

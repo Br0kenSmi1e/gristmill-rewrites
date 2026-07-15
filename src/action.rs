@@ -1,6 +1,10 @@
-//! Symbolic rewrite queries and actions.
+//! Shared symbolic rewrite query and action API.
 
-use crate::state::State;
+use crate::{biclique, parenthesize, permutation, state::State};
+
+pub use crate::biclique::{BicliqueAction, BicliqueSpace};
+pub use crate::parenthesize::{ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace};
+pub use crate::permutation::{PermutationAction, PermutationSpace};
 
 /// A position in the state's definition sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -21,29 +25,61 @@ pub enum ActionQuery {
     PermutationFactor(DefinitionPosition),
 }
 
-/// A lazy representation of every legal action for one query.
-///
-/// Its policy-facing representation is intentionally deferred.
-pub struct ActionSpace {
-    _private: (),
+/// A compact, family-specific description of valid policy choices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionSpace {
+    Parenthesize(ParenthesizeSpace),
+    Biclique(BicliqueSpace),
+    Permutation(PermutationSpace),
 }
 
-/// One concrete choice produced from an [`ActionSpace`] by an external policy.
-///
-/// Its family-specific representation is intentionally deferred.
-pub struct Action {
-    _private: (),
+impl ActionSpace {
+    pub fn query(&self) -> ActionQuery {
+        match self {
+            Self::Parenthesize(space) => ActionQuery::Parenthesize(space.target()),
+            Self::Biclique(space) => ActionQuery::BicliqueFactor(space.target()),
+            Self::Permutation(space) => ActionQuery::PermutationFactor(space.target()),
+        }
+    }
+}
+
+/// One validated policy choice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    Parenthesize(ParenthesizeAction),
+    Biclique(BicliqueAction),
+    Permutation(PermutationAction),
+}
+
+impl Action {
+    pub fn query(&self) -> ActionQuery {
+        match self {
+            Self::Parenthesize(action) => ActionQuery::Parenthesize(action.target()),
+            Self::Biclique(action) => ActionQuery::BicliqueFactor(action.target()),
+            Self::Permutation(action) => ActionQuery::PermutationFactor(action.target()),
+        }
+    }
 }
 
 /// Failure to construct an action space for a query.
-///
-/// Concrete error variants are intentionally deferred.
-#[derive(Debug)]
-pub struct QueryError {
-    _private: (),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryError {
+    DefinitionOutOfBounds { position: DefinitionPosition },
+    TermOutOfBounds { position: TermPosition },
+    Unsupported { query: ActionQuery },
 }
 
 /// Query the legal actions for one rewrite family at one typed target.
-pub fn query(_state: &State, _query: ActionQuery) -> Result<ActionSpace, QueryError> {
-    todo!("action-space representation and rewrite discovery are not designed yet")
+pub fn query(state: &State, query: ActionQuery) -> Result<ActionSpace, QueryError> {
+    match query {
+        ActionQuery::Parenthesize(target) => {
+            parenthesize::query(state, target).map(ActionSpace::Parenthesize)
+        }
+        ActionQuery::BicliqueFactor(target) => {
+            biclique::query(state, target).map(ActionSpace::Biclique)
+        }
+        ActionQuery::PermutationFactor(target) => {
+            permutation::query(state, target).map(ActionSpace::Permutation)
+        }
+    }
 }
