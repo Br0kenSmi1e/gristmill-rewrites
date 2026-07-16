@@ -12,20 +12,26 @@ pub(super) struct Edge {
     pub(super) terms: BTreeSet<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Graph {
+pub(super) type Edges = BTreeMap<(usize, usize), Edge>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct GraphKey {
     pub(super) left_exts: Vec<Index>,
     pub(super) right_exts: Vec<Index>,
     pub(super) contracted: Vec<Index>,
-    pub(super) left_nodes: Vec<Term>,
-    pub(super) right_nodes: Vec<Term>,
-    pub(super) edges: BTreeMap<(usize, usize), Edge>,
 }
 
-type GraphKey = (Vec<Index>, Vec<Index>, Vec<Index>);
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct GraphData {
+    pub(super) left_nodes: Vec<Term>,
+    pub(super) right_nodes: Vec<Term>,
+    pub(super) edges: Edges,
+}
+
+pub(super) type Graph = (GraphKey, GraphData);
 
 pub(super) fn build(bipartitions: Vec<(usize, TermBipartition)>) -> Vec<Graph> {
-    let mut graphs = BTreeMap::<GraphKey, Graph>::new();
+    let mut graphs = BTreeMap::<GraphKey, GraphData>::new();
 
     for (source_term, bipartition) in bipartitions {
         insert_bipartition(&mut graphs, source_term, bipartition);
@@ -35,13 +41,13 @@ pub(super) fn build(bipartitions: Vec<(usize, TermBipartition)>) -> Vec<Graph> {
         graph.edges.retain(|_, edge| edge.coeff != zero());
     }
     graphs
-        .into_values()
-        .filter(|graph| !graph.edges.is_empty())
+        .into_iter()
+        .filter(|(_, graph)| !graph.edges.is_empty())
         .collect()
 }
 
 fn insert_bipartition(
-    graphs: &mut BTreeMap<GraphKey, Graph>,
+    graphs: &mut BTreeMap<GraphKey, GraphData>,
     source_term: usize,
     bipartition: TermBipartition,
 ) {
@@ -54,15 +60,12 @@ fn insert_bipartition(
         contracted,
     } = bipartition;
 
-    let key = (left_exts.clone(), right_exts.clone(), contracted.clone());
-    let graph = graphs.entry(key).or_insert_with(|| Graph {
+    let key = GraphKey {
         left_exts,
         right_exts,
         contracted,
-        left_nodes: Vec::new(),
-        right_nodes: Vec::new(),
-        edges: BTreeMap::new(),
-    });
+    };
+    let graph = graphs.entry(key).or_default();
     let left = intern_node(&mut graph.left_nodes, left);
     let right = intern_node(&mut graph.right_nodes, right);
     let edge = graph.edges.entry((left, right)).or_insert_with(|| Edge {

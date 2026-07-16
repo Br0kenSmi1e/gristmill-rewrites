@@ -1,8 +1,22 @@
 //! Enumeration of maximal weighted rank-one bicliques.
 
-use super::graph::Graph;
+use super::graph::Edges;
 use crate::repr::Coefficient;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum SearchNode {
+    Left(usize),
+    Right(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Delta {
+    pub(super) coeff: Coefficient,
+    pub(super) terms: BTreeSet<usize>,
+}
+
+pub(super) type Frontier = BTreeMap<SearchNode, Delta>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Biclique {
@@ -11,123 +25,250 @@ pub(super) struct Biclique {
     pub(super) terms: BTreeSet<usize>,
 }
 
-pub(super) fn enumerate_bicliques(graph: &Graph) -> Vec<Biclique> {
-    let mut results = Vec::new();
-    let mut seen = BTreeSet::new();
-
-    for (&(left, right), edge) in &graph.edges {
-        let biclique = Biclique {
-            left: vec![(left, one())],
-            right: vec![(right, edge.coeff.clone())],
-            terms: edge.terms.clone(),
-        };
-        search_bicliques(graph, biclique, 0, &mut seen, &mut results);
+pub(super) fn enumerate_bicliques(edges: &Edges) -> Vec<Biclique> {
+    if edges.len() < 2 {
+        return Vec::new();
     }
 
+    let mut biclique = Biclique {
+        left: Vec::new(),
+        right: Vec::new(),
+        terms: BTreeSet::new(),
+    };
+    let mut candidates = all_candidates(edges);
+    let frontier = candidates
+        .iter()
+        .copied()
+        .map(|node| {
+            (
+                node,
+                Delta {
+                    coeff: one(),
+                    terms: BTreeSet::new(),
+                },
+            )
+        })
+        .collect();
+    let mut results = Vec::new();
+
+    expand(
+        edges,
+        &mut biclique,
+        &frontier,
+        &mut candidates,
+        &mut results,
+    );
     results
 }
 
-fn search_bicliques(
-    graph: &Graph,
-    biclique: Biclique,
-    position: usize,
-    seen: &mut BTreeSet<(Vec<usize>, Vec<usize>)>,
+fn all_candidates(edges: &Edges) -> Vec<SearchNode> {
+    edges
+        .keys()
+        .map(|(left, _)| *left)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(SearchNode::Left)
+        .chain(
+            edges
+                .keys()
+                .map(|(_, right)| *right)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(SearchNode::Right),
+        )
+        .collect()
+}
+
+fn expand(
+    edges: &Edges,
+    biclique: &mut Biclique,
+    frontier: &Frontier,
+    candidates: &mut Vec<SearchNode>,
     results: &mut Vec<Biclique>,
 ) {
-    let node_count = graph.left_nodes.len() + graph.right_nodes.len();
-    if position == node_count {
-        if (biclique.left.len() > 1 || biclique.right.len() > 1) && is_maximal(graph, &biclique) {
-            let biclique = normalize_biclique(biclique);
-            let key = (
-                biclique.left.iter().map(|(node, _)| *node).collect(),
-                biclique.right.iter().map(|(node, _)| *node).collect(),
-            );
-            if seen.insert(key) {
-                results.push(biclique);
-            }
-        }
+    if has_sharing(biclique) && frontier.is_empty() {
+        results.push(normalize_biclique(biclique.clone()));
         return;
     }
 
-    if position < graph.left_nodes.len() {
-        let node = position;
-        if biclique.left.iter().any(|(selected, _)| *selected == node) {
-            search_bicliques(graph, biclique, position + 1, seen, results);
-            return;
-        }
-        if let Some(next) = add_left(graph, &biclique, node) {
-            search_bicliques(graph, next, position + 1, seen, results);
-        }
-    } else {
-        let node = position - graph.left_nodes.len();
-        if biclique.right.iter().any(|(selected, _)| *selected == node) {
-            search_bicliques(graph, biclique, position + 1, seen, results);
-            return;
-        }
-        if let Some(next) = add_right(graph, &biclique, node) {
-            search_bicliques(graph, next, position + 1, seen, results);
+    let child_frontiers = build_child_frontiers(edges, biclique, frontier);
+    let current = sift(biclique, candidates, frontier, &child_frontiers);
+
+    for node in current {
+        let Some(delta) = frontier.get(&node) else {
+            continue;
+        };
+        let Some(position) = candidates.iter().position(|candidate| *candidate == node) else {
+            continue;
+        };
+
+        let removed = candidates.remove(position);
+        let child_frontier = &child_frontiers[&removed];
+        let mut child_candidates = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| child_frontier.contains_key(candidate))
+            .collect::<Vec<_>>();
+
+        push(biclique, removed, delta);
+        expand(
+            edges,
+            biclique,
+            child_frontier,
+            &mut child_candidates,
+            results,
+        );
+        pop(biclique, removed, delta);
+    }
+}
+
+pub(super) fn sift(
+    biclique: &Biclique,
+    candidates: &[SearchNode],
+    frontier: &Frontier,
+    child_frontiers: &BTreeMap<SearchNode, Frontier>,
+) -> Vec<SearchNode> {
+    if biclique.left.is_empty() && biclique.right.is_empty() {
+        return candidates
+            .iter()
+            .filter(|node| matches!(node, SearchNode::Left(_)))
+            .copied()
+            .collect();
+    }
+
+    if biclique.left.len() == 1 && biclique.right.is_empty() {
+        return candidates
+            .iter()
+            .filter(|node| matches!(node, SearchNode::Right(_)))
+            .filter(|node| matches!(frontier.get(node), Some(delta) if !delta.terms.is_empty()))
+            .copied()
+            .collect();
+    }
+
+    let candidate_set = candidates.iter().copied().collect::<BTreeSet<_>>();
+    let mut pivot_neighbors = None;
+    let mut best_score = 0;
+    for node in candidates {
+        let neighbors = &child_frontiers[node];
+        let score = neighbors
+            .keys()
+            .filter(|candidate| candidate_set.contains(candidate))
+            .count();
+        if score > best_score {
+            best_score = score;
+            pivot_neighbors = Some(neighbors);
         }
     }
 
-    search_bicliques(graph, biclique, position + 1, seen, results);
+    candidates
+        .iter()
+        .filter(|node| !pivot_neighbors.is_some_and(|neighbors| neighbors.contains_key(node)))
+        .copied()
+        .collect()
 }
 
-fn add_left(graph: &Graph, biclique: &Biclique, node: usize) -> Option<Biclique> {
-    let first_right = biclique.right.first()?;
-    let first_edge = graph.edges.get(&(node, first_right.0))?;
-    let coeff = &first_edge.coeff / &first_right.1;
-    let mut added_terms = BTreeSet::new();
+fn build_child_frontiers(
+    edges: &Edges,
+    biclique: &Biclique,
+    frontier: &Frontier,
+) -> BTreeMap<SearchNode, Frontier> {
+    frontier
+        .iter()
+        .map(|(&chosen, chosen_delta)| {
+            let child = frontier
+                .iter()
+                .filter_map(|(&candidate, candidate_delta)| {
+                    if chosen == candidate {
+                        return None;
+                    }
+                    update_delta(
+                        edges,
+                        biclique,
+                        chosen,
+                        chosen_delta,
+                        candidate,
+                        candidate_delta,
+                    )
+                    .map(|delta| (candidate, delta))
+                })
+                .collect();
+            (chosen, child)
+        })
+        .collect()
+}
 
-    for (right, right_coeff) in &biclique.right {
-        let edge = graph.edges.get(&(node, *right))?;
-        if edge.coeff != &coeff * right_coeff
-            || !edge.terms.is_disjoint(&biclique.terms)
-            || !edge.terms.is_disjoint(&added_terms)
-        {
-            return None;
-        }
-        added_terms.extend(&edge.terms);
+fn update_delta(
+    edges: &Edges,
+    biclique: &Biclique,
+    chosen: SearchNode,
+    chosen_delta: &Delta,
+    candidate: SearchNode,
+    candidate_delta: &Delta,
+) -> Option<Delta> {
+    if matches!(
+        (chosen, candidate),
+        (SearchNode::Left(_), SearchNode::Left(_)) | (SearchNode::Right(_), SearchNode::Right(_))
+    ) {
+        return chosen_delta
+            .terms
+            .is_disjoint(&candidate_delta.terms)
+            .then(|| candidate_delta.clone());
     }
 
-    let mut result = biclique.clone();
-    result.left.push((node, coeff));
-    result.terms.extend(added_terms);
-    Some(result)
-}
+    let (left, right) = match (chosen, candidate) {
+        (SearchNode::Left(left), SearchNode::Right(right))
+        | (SearchNode::Right(right), SearchNode::Left(left)) => (left, right),
+        _ => unreachable!(),
+    };
+    let edge = edges.get(&(left, right))?;
 
-fn add_right(graph: &Graph, biclique: &Biclique, node: usize) -> Option<Biclique> {
-    let first_left = biclique.left.first()?;
-    let first_edge = graph.edges.get(&(first_left.0, node))?;
-    let coeff = &first_edge.coeff / &first_left.1;
-    let mut added_terms = BTreeSet::new();
-
-    for (left, left_coeff) in &biclique.left {
-        let edge = graph.edges.get(&(*left, node))?;
-        if edge.coeff != left_coeff * &coeff
-            || !edge.terms.is_disjoint(&biclique.terms)
-            || !edge.terms.is_disjoint(&added_terms)
-        {
-            return None;
-        }
-        added_terms.extend(&edge.terms);
+    if !chosen_delta.terms.is_disjoint(&candidate_delta.terms)
+        || !biclique.terms.is_disjoint(&edge.terms)
+        || !chosen_delta.terms.is_disjoint(&edge.terms)
+        || !candidate_delta.terms.is_disjoint(&edge.terms)
+    {
+        return None;
     }
 
-    let mut result = biclique.clone();
-    result.right.push((node, coeff));
-    result.terms.extend(added_terms);
-    Some(result)
+    let expected = &edge.coeff / &chosen_delta.coeff;
+    let mut next = candidate_delta.clone();
+    if candidate_delta.terms.is_empty() {
+        next.coeff = expected;
+    } else if candidate_delta.coeff != expected {
+        return None;
+    }
+    next.terms.extend(&edge.terms);
+    Some(next)
 }
 
-fn is_maximal(graph: &Graph, biclique: &Biclique) -> bool {
-    let left_maximal = (0..graph.left_nodes.len()).all(|node| {
-        biclique.left.iter().any(|(selected, _)| *selected == node)
-            || add_left(graph, biclique, node).is_none()
-    });
-    let right_maximal = (0..graph.right_nodes.len()).all(|node| {
-        biclique.right.iter().any(|(selected, _)| *selected == node)
-            || add_right(graph, biclique, node).is_none()
-    });
-    left_maximal && right_maximal
+fn has_sharing(biclique: &Biclique) -> bool {
+    biclique.left.len() >= 2 || biclique.right.len() >= 2
+}
+
+fn push(biclique: &mut Biclique, node: SearchNode, delta: &Delta) {
+    debug_assert!(biclique.terms.is_disjoint(&delta.terms));
+    biclique.terms.extend(&delta.terms);
+
+    match node {
+        SearchNode::Left(node) => biclique.left.push((node, delta.coeff.clone())),
+        SearchNode::Right(node) => biclique.right.push((node, delta.coeff.clone())),
+    }
+}
+
+fn pop(biclique: &mut Biclique, node: SearchNode, delta: &Delta) {
+    for term in &delta.terms {
+        let removed = biclique.terms.remove(term);
+        debug_assert!(removed);
+    }
+
+    match node {
+        SearchNode::Left(_) => {
+            biclique.left.pop();
+        }
+        SearchNode::Right(_) => {
+            biclique.right.pop();
+        }
+    }
 }
 
 fn normalize_biclique(mut biclique: Biclique) -> Biclique {

@@ -1,16 +1,18 @@
 //! Unit tests for biclique normalization, graph construction, and search.
 
 use super::{
-    graph::{Edge, build},
+    graph::{Edge, Edges, build},
     normalize::{
         align_bipartition, canon_bipartition, enumerate_bipartitions, normalize_definition,
     },
+    search::{Delta, SearchNode, sift},
     *,
 };
 use crate::{
     parenthesize::{TermBipartition, bipartition_term},
     repr::{Coefficient, Computation, IndexId, RangeId, TensorId, TensorInfo, TensorRef},
 };
+use std::collections::BTreeMap;
 
 const RANGE: RangeId = RangeId(0);
 const A: TensorId = TensorId(0);
@@ -253,10 +255,10 @@ fn builds_a_graph_from_both_bipartition_orientations() {
     let graphs = build(canonical);
 
     assert_eq!(graphs.len(), 1);
-    for graph in graphs {
-        assert!(graph.left_exts.is_empty());
-        assert!(graph.right_exts.is_empty());
-        assert!(graph.contracted.is_empty());
+    for (key, graph) in graphs {
+        assert!(key.left_exts.is_empty());
+        assert!(key.right_exts.is_empty());
+        assert!(key.contracted.is_empty());
         assert_eq!(graph.edges.len(), 4);
 
         let left_a = scalar_node(&graph.left_nodes, A);
@@ -271,7 +273,7 @@ fn builds_a_graph_from_both_bipartition_orientations() {
         assert_eq!(graph.edges.get(&(left_a, right_c)), Some(&edge(3, &[1])));
         assert_eq!(graph.edges.get(&(left_c, right_a)), Some(&edge(3, &[1])));
 
-        let bicliques = enumerate_bicliques(&graph);
+        let bicliques = enumerate_bicliques(&graph.edges);
         assert_eq!(bicliques.len(), 2);
         assert!(bicliques.iter().any(|biclique| {
             biclique.left == vec![(left_a, one())]
@@ -282,14 +284,14 @@ fn builds_a_graph_from_both_bipartition_orientations() {
 
 #[test]
 fn enumerates_one_maximal_rank_one_rectangle() {
-    let graph = test_graph(&[
+    let edges = test_edges(&[
         (0, 0, 2, &[0]),
         (0, 1, 3, &[1]),
         (1, 0, 4, &[2]),
         (1, 1, 6, &[3]),
     ]);
 
-    let bicliques = enumerate_bicliques(&graph);
+    let bicliques = enumerate_bicliques(&edges);
 
     assert_eq!(bicliques.len(), 1);
     assert_eq!(bicliques[0].left, vec![(0, one()), (1, integer(2))]);
@@ -298,15 +300,81 @@ fn enumerates_one_maximal_rank_one_rectangle() {
 }
 
 #[test]
+fn emits_a_dense_maximal_rectangle_once() {
+    let edges = test_edges(&[
+        (0, 0, 2, &[0]),
+        (0, 1, 3, &[1]),
+        (0, 2, 5, &[2]),
+        (1, 0, 4, &[3]),
+        (1, 1, 6, &[4]),
+        (1, 2, 10, &[5]),
+    ]);
+
+    let bicliques = enumerate_bicliques(&edges);
+
+    assert_eq!(bicliques.len(), 1);
+    assert_eq!(bicliques[0].left, vec![(0, one()), (1, integer(2))]);
+    assert_eq!(
+        bicliques[0].right,
+        vec![(0, integer(2)), (1, integer(3)), (2, integer(5))]
+    );
+    assert_eq!(bicliques[0].terms, BTreeSet::from([0, 1, 2, 3, 4, 5]));
+}
+
+#[test]
+fn sift_branches_outside_the_best_pivot_frontier() {
+    fn delta() -> Delta {
+        Delta {
+            coeff: one(),
+            terms: BTreeSet::from([1]),
+        }
+    }
+
+    let biclique = Biclique {
+        left: vec![(0, one())],
+        right: vec![(0, one())],
+        terms: BTreeSet::from([0]),
+    };
+    let candidates = vec![
+        SearchNode::Left(1),
+        SearchNode::Right(1),
+        SearchNode::Left(2),
+    ];
+    let frontier = candidates
+        .iter()
+        .copied()
+        .map(|node| (node, delta()))
+        .collect();
+    let child_frontiers = BTreeMap::from([
+        (
+            SearchNode::Left(1),
+            BTreeMap::from([
+                (SearchNode::Right(1), delta()),
+                (SearchNode::Left(2), delta()),
+            ]),
+        ),
+        (
+            SearchNode::Right(1),
+            BTreeMap::from([(SearchNode::Left(2), delta())]),
+        ),
+        (SearchNode::Left(2), BTreeMap::new()),
+    ]);
+
+    let current = sift(&biclique, &candidates, &frontier, &child_frontiers);
+
+    assert_eq!(current, vec![SearchNode::Left(1)]);
+}
+
+#[test]
 fn rejects_a_non_rank_one_rectangle() {
-    let graph = test_graph(&[
+    let edges = test_edges(&[
         (0, 0, 1, &[0]),
         (0, 1, 1, &[1]),
         (1, 0, 1, &[2]),
         (1, 1, 2, &[3]),
     ]);
 
-    let bicliques = enumerate_bicliques(&graph);
+    let bicliques = enumerate_bicliques(&edges);
 
     assert_eq!(bicliques.len(), 4);
     assert!(
@@ -318,9 +386,9 @@ fn rejects_a_non_rank_one_rectangle() {
 
 #[test]
 fn rejects_edges_that_reuse_a_source_term() {
-    let graph = test_graph(&[(0, 0, 1, &[0]), (0, 1, 1, &[0])]);
+    let edges = test_edges(&[(0, 0, 1, &[0]), (0, 1, 1, &[0])]);
 
-    let bicliques = enumerate_bicliques(&graph);
+    let bicliques = enumerate_bicliques(&edges);
 
     assert!(bicliques.is_empty());
 }
@@ -369,36 +437,11 @@ fn scalar_node(nodes: &[Term], tensor: TensorId) -> usize {
         .unwrap()
 }
 
-fn test_graph(edges: &[(usize, usize, i64, &[usize])]) -> Graph {
-    let node_count = edges
+fn test_edges(edges: &[(usize, usize, i64, &[usize])]) -> Edges {
+    edges
         .iter()
-        .map(|(left, right, _, _)| (*left).max(*right))
-        .max()
-        .unwrap()
-        + 1;
-    Graph {
-        left_exts: Vec::new(),
-        right_exts: Vec::new(),
-        contracted: Vec::new(),
-        left_nodes: (0..node_count)
-            .map(|node| unit_term(TensorId(node as u32)))
-            .collect(),
-        right_nodes: (0..node_count)
-            .map(|node| unit_term(TensorId(node as u32)))
-            .collect(),
-        edges: edges
-            .iter()
-            .map(|&(left, right, coeff, terms)| ((left, right), edge(coeff, terms)))
-            .collect(),
-    }
-}
-
-fn unit_term(tensor: TensorId) -> Term {
-    Term {
-        sums: Vec::new(),
-        coeff: one(),
-        factors: vec![scalar(tensor)],
-    }
+        .map(|&(left, right, coeff, terms)| ((left, right), edge(coeff, terms)))
+        .collect()
 }
 
 fn edge(coeff: i64, terms: &[usize]) -> Edge {

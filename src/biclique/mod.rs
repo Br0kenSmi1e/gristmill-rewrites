@@ -119,6 +119,7 @@ fn make_action(
     left_mask: &[bool],
     right_mask: &[bool],
 ) -> BicliqueAction {
+    let (key, data) = graph;
     let left = biclique
         .left
         .iter()
@@ -135,7 +136,7 @@ fn make_action(
     let mut terms = BTreeSet::new();
     for (left_node, _) in &left {
         for (right_node, _) in &right {
-            let edge = &graph.edges[&(*left_node, *right_node)];
+            let edge = &data.edges[&(*left_node, *right_node)];
             debug_assert!(terms.is_disjoint(&edge.terms));
             terms.extend(&edge.terms);
         }
@@ -145,10 +146,10 @@ fn make_action(
         target,
         terms: terms.into_iter().collect(),
         children: (
-            side_definition(base, &graph.left_exts, &graph.left_nodes, &left),
-            side_definition(base, &graph.right_exts, &graph.right_nodes, &right),
+            side_definition(base, &key.left_exts, &data.left_nodes, &left),
+            side_definition(base, &key.right_exts, &data.right_nodes, &right),
         ),
-        contracted: graph.contracted.clone(),
+        contracted: key.contracted.clone(),
     }
 }
 
@@ -212,7 +213,8 @@ pub(crate) fn query(
     let mut rewrites = Vec::new();
 
     for (graph_position, graph) in graphs.iter().enumerate() {
-        for biclique in enumerate_bicliques(graph) {
+        let (_, data) = graph;
+        for biclique in enumerate_bicliques(&data.edges) {
             let rewrite = make_action(
                 target,
                 definition.base,
