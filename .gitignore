@@ -1,2 +1,9 @@
 /target
 /tmp
+/python/gristmill_rewrites/_core.*.pyd
+/python/gristmill_rewrites/_core.*.so
+/python/.pytest_cache
+/python/.venv
+/python/target
+__pycache__/
+*.py[cod]
