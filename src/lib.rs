@@ -4,6 +4,7 @@ pub mod action;
 mod biclique;
 mod canon;
 pub mod cost;
+pub mod io;
 mod parenthesize;
 mod permutation;
 pub mod repr;
