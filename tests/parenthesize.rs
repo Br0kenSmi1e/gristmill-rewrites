@@ -77,7 +77,6 @@ fn exposes_a_non_symbolic_parenthesization_space() {
         panic!("expected a parenthesization action");
     };
     assert_eq!(action.target(), target());
-    assert_eq!(action.left(), &[true, true, false]);
 }
 
 #[test]

@@ -5,6 +5,17 @@ use crate::{
     repr::{Coefficient, Index, IndexId, TensorDef, TensorId, TensorRef, Term},
     state::{State, StateError},
 };
+use std::collections::BTreeSet;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TermBipartition {
+    pub(crate) coeff: Coefficient,
+    pub(crate) left: Term,
+    pub(crate) left_exts: Vec<Index>,
+    pub(crate) right: Term,
+    pub(crate) right_exts: Vec<Index>,
+    pub(crate) contracted: Vec<Index>,
+}
 
 /// The non-symbolic policy interface for one parenthesization query.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,30 +50,30 @@ impl ParenthesizeSpace {
             }
         }
 
-        let (left_term, left_exts, right_term, right_exts, outer_sums) =
-            select(&self.exts, &self.term, &left);
-
-        let children = (
-            TensorDef {
-                base: self.base,
-                exts: left_exts,
-                rhs: vec![left_term],
-            },
-            TensorDef {
-                base: self.base,
-                exts: right_exts,
-                rhs: vec![right_term],
-            },
-        );
+        let bipartition = bipartition_term(&self.exts, &self.term, &left);
 
         Ok(Action::Parenthesize(ParenthesizeAction {
             target: self.target,
-            left: left.into_boxed_slice(),
-            children,
-            outer_sums,
-            coeff: self.term.coeff.clone(),
+            base: self.base,
+            bipartition,
         }))
     }
+}
+
+fn validate_choice(factor_count: usize, left: &[bool]) -> Result<(), ParenthesizeChoiceError> {
+    if factor_count <= 2 {
+        return Err(ParenthesizeChoiceError::NoParenthesization { factor_count });
+    }
+    if left.len() != factor_count {
+        return Err(ParenthesizeChoiceError::WrongPartitionLength {
+            expected: factor_count,
+            got: left.len(),
+        });
+    }
+    if left.iter().all(|&selected| selected) || left.iter().all(|&selected| !selected) {
+        return Err(ParenthesizeChoiceError::EmptyPartitionSide);
+    }
+    Ok(())
 }
 
 /// An invalid policy choice for a parenthesization space.
@@ -76,19 +87,13 @@ pub enum ParenthesizeChoiceError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParenthesizeAction {
     target: TermPosition,
-    left: Box<[bool]>,
-    children: (TensorDef, TensorDef),
-    outer_sums: Vec<Index>,
-    coeff: Coefficient,
+    base: TensorId,
+    bipartition: TermBipartition,
 }
 
 impl ParenthesizeAction {
     pub fn target(&self) -> TermPosition {
         self.target
-    }
-
-    pub fn left(&self) -> &[bool] {
-        &self.left
     }
 }
 
@@ -114,13 +119,30 @@ pub(crate) fn query(state: &State, target: TermPosition) -> Result<ParenthesizeS
 }
 
 pub(crate) fn apply(state: &mut State, action: ParenthesizeAction) -> Result<(), StateError> {
-    let (left, right) = action.children;
+    let TermBipartition {
+        coeff,
+        left,
+        left_exts,
+        right,
+        right_exts,
+        contracted,
+    } = action.bipartition;
+    let left = TensorDef {
+        base: action.base,
+        exts: left_exts,
+        rhs: vec![left],
+    };
+    let right = TensorDef {
+        base: action.base,
+        exts: right_exts,
+        rhs: vec![right],
+    };
     let (left_coeff, left_ref) = state.add_intermediate(left)?;
     let (right_coeff, right_ref) = state.add_intermediate(right)?;
 
     let replacement = Term {
-        sums: action.outer_sums,
-        coeff: action.coeff * left_coeff * right_coeff,
+        sums: contracted,
+        coeff: coeff * left_coeff * right_coeff,
         factors: vec![left_ref, right_ref],
     };
     state.replace_terms(
@@ -132,62 +154,55 @@ pub(crate) fn apply(state: &mut State, action: ParenthesizeAction) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn select(
-    exts: &[Index],
-    term: &Term,
-    left: &[bool],
-) -> (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>) {
+pub(crate) fn bipartition_term(exts: &[Index], term: &Term, left: &[bool]) -> TermBipartition {
     let (left_factors, right_factors) = split_factors(&term.factors, left);
-    let left_sums = term
-        .sums
-        .iter()
-        .filter(|index| {
-            uses_index(&left_factors, index.id) && !uses_index(&right_factors, index.id)
-        })
-        .copied()
-        .collect::<Vec<_>>();
-    let right_sums = term
-        .sums
-        .iter()
-        .filter(|index| {
-            uses_index(&right_factors, index.id) && !uses_index(&left_factors, index.id)
-        })
-        .copied()
-        .collect::<Vec<_>>();
-    let contracted = term
-        .sums
-        .iter()
-        .filter(|index| !left_sums.contains(index) && !right_sums.contains(index))
-        .copied()
-        .collect::<Vec<_>>();
+    let left_used = used_indices(&left_factors);
+    let right_used = used_indices(&right_factors);
+
+    let mut left_sums = Vec::new();
+    let mut right_sums = Vec::new();
+    let mut contracted = Vec::new();
+    for &index in &term.sums {
+        match (
+            left_used.contains(&index.id),
+            right_used.contains(&index.id),
+        ) {
+            (true, false) => left_sums.push(index),
+            (false, true) => right_sums.push(index),
+            (true, true) => contracted.push(index),
+            (false, false) => unreachable!("validated summed indices are always used"),
+        }
+    }
+
     let left_exts = exts
         .iter()
         .chain(&contracted)
-        .filter(|index| uses_index(&left_factors, index.id))
+        .filter(|index| left_used.contains(&index.id))
         .copied()
         .collect();
     let right_exts = exts
         .iter()
         .chain(&contracted)
-        .filter(|index| uses_index(&right_factors, index.id))
+        .filter(|index| right_used.contains(&index.id))
         .copied()
         .collect();
 
-    (
-        Term {
+    TermBipartition {
+        coeff: term.coeff.clone(),
+        left: Term {
             sums: left_sums,
             coeff: Coefficient::from_integer(1.into()),
             factors: left_factors,
         },
         left_exts,
-        Term {
+        right: Term {
             sums: right_sums,
             coeff: Coefficient::from_integer(1.into()),
             factors: right_factors,
         },
         right_exts,
         contracted,
-    )
+    }
 }
 
 fn split_factors(factors: &[TensorRef], left: &[bool]) -> (Vec<TensorRef>, Vec<TensorRef>) {
@@ -203,22 +218,9 @@ fn split_factors(factors: &[TensorRef], left: &[bool]) -> (Vec<TensorRef>, Vec<T
     (left_factors, right_factors)
 }
 
-fn uses_index(factors: &[TensorRef], index: IndexId) -> bool {
-    factors.iter().any(|factor| factor.indices.contains(&index))
-}
-
-fn validate_choice(factor_count: usize, left: &[bool]) -> Result<(), ParenthesizeChoiceError> {
-    if factor_count <= 2 {
-        return Err(ParenthesizeChoiceError::NoParenthesization { factor_count });
-    }
-    if left.len() != factor_count {
-        return Err(ParenthesizeChoiceError::WrongPartitionLength {
-            expected: factor_count,
-            got: left.len(),
-        });
-    }
-    if left.iter().all(|&selected| selected) || left.iter().all(|&selected| !selected) {
-        return Err(ParenthesizeChoiceError::EmptyPartitionSide);
-    }
-    Ok(())
+fn used_indices(factors: &[TensorRef]) -> BTreeSet<IndexId> {
+    factors
+        .iter()
+        .flat_map(|factor| factor.indices.iter().copied())
+        .collect()
 }

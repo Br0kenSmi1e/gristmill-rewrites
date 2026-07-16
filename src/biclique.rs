@@ -3,7 +3,7 @@
 use crate::{
     action::{Action, DefinitionPosition, QueryError},
     canon::{CanonError, canon_term},
-    parenthesize,
+    parenthesize::{TermBipartition, bipartition_term},
     repr::{Coefficient, Computation, Index, IndexId, TensorDef, TensorId, Term},
     state::{State, StateError},
 };
@@ -102,11 +102,7 @@ impl BicliqueAction {
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn enumerate_splits(
-    exts: &[Index],
-    term: &Term,
-) -> Vec<(Term, Vec<Index>, Term, Vec<Index>, Vec<Index>)> {
+fn enumerate_splits(exts: &[Index], term: &Term) -> Vec<TermBipartition> {
     if term.factors.len() < 2 {
         return Vec::new();
     }
@@ -120,7 +116,7 @@ fn enumerate_splits(
     for choice in 0..split_count {
         let mut left = vec![true];
         left.extend((0..term.factors.len() - 1).map(|position| choice & (1 << position) != 0));
-        splits.push(parenthesize::select(exts, term, &left));
+        splits.push(bipartition_term(exts, term, &left));
     }
 
     splits
@@ -141,19 +137,19 @@ impl Owner {
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn canon_split(
     computation: &Computation,
     definition_exts: &[Index],
-    split: (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
-) -> Result<
-    Option<(
-        (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
-        (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
-    )>,
-    CanonError,
-> {
-    let (left, left_exts, right, right_exts, contracted) = split;
+    split: TermBipartition,
+) -> Result<Option<(TermBipartition, TermBipartition)>, CanonError> {
+    let TermBipartition {
+        coeff,
+        left,
+        left_exts,
+        right,
+        right_exts,
+        contracted,
+    } = split;
     let mut candidates = Vec::new();
     let mut zero = false;
 
@@ -177,13 +173,14 @@ fn canon_split(
         canonical_left.coeff *= canonical_right.coeff.clone();
         canonical_right.coeff = Coefficient::from_integer(1.into());
 
-        candidates.push((
-            canonical_left,
-            align_exts(&scope, &fixed, &left_exts)?,
-            canonical_right,
-            align_exts(&scope, &fixed, &right_exts)?,
-            fixed[definition_exts.len()..].to_vec(),
-        ));
+        candidates.push(TermBipartition {
+            coeff: coeff.clone(),
+            left: canonical_left,
+            left_exts: align_exts(&scope, &fixed, &left_exts)?,
+            right: canonical_right,
+            right_exts: align_exts(&scope, &fixed, &right_exts)?,
+            contracted: fixed[definition_exts.len()..].to_vec(),
+        });
     }
 
     if zero || candidates.is_empty() {
@@ -338,11 +335,7 @@ fn index_id(position: usize) -> Result<IndexId, CanonError> {
         .map_err(|_| CanonError::ExhaustedIndexIds)
 }
 
-#[allow(clippy::type_complexity)]
-fn choose_candidate(
-    candidates: &[(Term, Vec<Index>, Term, Vec<Index>, Vec<Index>)],
-    owner: Owner,
-) -> Option<(Term, Vec<Index>, Term, Vec<Index>, Vec<Index>)> {
+fn choose_candidate(candidates: &[TermBipartition], owner: Owner) -> Option<TermBipartition> {
     let mut best = 0;
     for candidate in 1..candidates.len() {
         if compare_candidate(&candidates[candidate], &candidates[best], owner) == Ordering::Less {
@@ -352,7 +345,7 @@ fn choose_candidate(
 
     if candidates.iter().any(|candidate| {
         compare_candidate(candidate, &candidates[best], owner) == Ordering::Equal
-            && candidate.0.coeff != candidates[best].0.coeff
+            && candidate.left.coeff != candidates[best].left.coeff
     }) {
         None
     } else {
@@ -360,19 +353,12 @@ fn choose_candidate(
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn compare_candidate(
-    left: &(Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
-    right: &(Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
-    owner: Owner,
-) -> Ordering {
+fn compare_candidate(left: &TermBipartition, right: &TermBipartition, owner: Owner) -> Ordering {
     match owner {
-        Owner::Left => {
-            compare_term(&left.0, &right.0).then_with(|| compare_term(&left.2, &right.2))
-        }
-        Owner::Right => {
-            compare_term(&left.2, &right.2).then_with(|| compare_term(&left.0, &right.0))
-        }
+        Owner::Left => compare_term(&left.left, &right.left)
+            .then_with(|| compare_term(&left.right, &right.right)),
+        Owner::Right => compare_term(&left.right, &right.right)
+            .then_with(|| compare_term(&left.left, &right.left)),
     }
 }
 
@@ -426,7 +412,6 @@ fn build_graphs(
                 Owner::Left,
                 definition.exts.len(),
                 term_position,
-                &term.coeff,
                 left_owned,
             );
             insert_split(
@@ -434,7 +419,6 @@ fn build_graphs(
                 Owner::Right,
                 definition.exts.len(),
                 term_position,
-                &term.coeff,
                 right_owned,
             );
         }
@@ -449,18 +433,22 @@ fn build_graphs(
         .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::type_complexity)]
 fn insert_split(
     graphs: &mut BTreeMap<GraphKey, Graph>,
     owner: Owner,
     definition_ext_count: usize,
     term_position: usize,
-    source_coeff: &Coefficient,
-    split: (Term, Vec<Index>, Term, Vec<Index>, Vec<Index>),
+    split: TermBipartition,
 ) {
-    let (mut left, left_exts, mut right, right_exts, contracted) = split;
-    let coeff = source_coeff * &left.coeff * &right.coeff;
+    let TermBipartition {
+        coeff,
+        mut left,
+        left_exts,
+        mut right,
+        right_exts,
+        contracted,
+    } = split;
+    let coeff = &coeff * &left.coeff * &right.coeff;
     left.coeff = one();
     right.coeff = one();
 
@@ -878,12 +866,12 @@ mod tests {
         let splits = enumerate_splits(&[], &term);
 
         assert_eq!(splits.len(), 3);
-        assert_eq!(tensors(&splits[0].0), vec![A]);
-        assert_eq!(tensors(&splits[0].2), vec![B, C]);
-        assert_eq!(tensors(&splits[1].0), vec![A, B]);
-        assert_eq!(tensors(&splits[1].2), vec![C]);
-        assert_eq!(tensors(&splits[2].0), vec![A, C]);
-        assert_eq!(tensors(&splits[2].2), vec![B]);
+        assert_eq!(tensors(&splits[0].left), vec![A]);
+        assert_eq!(tensors(&splits[0].right), vec![B, C]);
+        assert_eq!(tensors(&splits[1].left), vec![A, B]);
+        assert_eq!(tensors(&splits[1].right), vec![C]);
+        assert_eq!(tensors(&splits[2].left), vec![A, C]);
+        assert_eq!(tensors(&splits[2].right), vec![B]);
     }
 
     #[test]
@@ -897,8 +885,8 @@ mod tests {
         let splits = enumerate_splits(&[], &term);
 
         assert_eq!(splits.len(), 1);
-        assert_eq!(tensors(&splits[0].0), vec![A]);
-        assert_eq!(tensors(&splits[0].2), vec![B]);
+        assert_eq!(tensors(&splits[0].left), vec![A]);
+        assert_eq!(tensors(&splits[0].right), vec![B]);
     }
 
     #[test]
@@ -910,15 +898,15 @@ mod tests {
         };
 
         let splits = enumerate_splits(&[index(2), index(3)], &term);
-        let (left, left_exts, right, right_exts, contracted) = &splits[1];
+        let split = &splits[1];
 
-        assert_eq!(left.sums, vec![index(0)]);
-        assert!(right.sums.is_empty());
-        assert_eq!(left_exts, &vec![index(2), index(1)]);
-        assert_eq!(right_exts, &vec![index(3), index(1)]);
-        assert_eq!(contracted, &vec![index(1)]);
-        assert_eq!(left.coeff, one());
-        assert_eq!(right.coeff, one());
+        assert_eq!(split.left.sums, vec![index(0)]);
+        assert!(split.right.sums.is_empty());
+        assert_eq!(split.left_exts, vec![index(2), index(1)]);
+        assert_eq!(split.right_exts, vec![index(3), index(1)]);
+        assert_eq!(split.contracted, vec![index(1)]);
+        assert_eq!(split.left.coeff, one());
+        assert_eq!(split.right.coeff, one());
     }
 
     #[test]
@@ -929,28 +917,28 @@ mod tests {
             coeff: one(),
             factors: vec![tensor(A, &[10, 11]), tensor(B, &[11, 10])],
         };
-        let split = parenthesize::select(&[], &term, &[true, false]);
+        let split = bipartition_term(&[], &term, &[true, false]);
 
         let (left_owned, right_owned) = canon_split(&computation, &[], split).unwrap().unwrap();
 
         assert_eq!(
-            left_owned.0.factors[0].indices,
+            left_owned.left.factors[0].indices,
             vec![IndexId(0), IndexId(1)]
         );
         assert_eq!(
-            left_owned.2.factors[0].indices,
+            left_owned.right.factors[0].indices,
             vec![IndexId(1), IndexId(0)]
         );
         assert_eq!(
-            right_owned.0.factors[0].indices,
+            right_owned.left.factors[0].indices,
             vec![IndexId(1), IndexId(0)]
         );
         assert_eq!(
-            right_owned.2.factors[0].indices,
+            right_owned.right.factors[0].indices,
             vec![IndexId(0), IndexId(1)]
         );
-        assert_eq!(left_owned.4, vec![index(0), index(1)]);
-        assert_eq!(right_owned.4, vec![index(0), index(1)]);
+        assert_eq!(left_owned.contracted, vec![index(0), index(1)]);
+        assert_eq!(right_owned.contracted, vec![index(0), index(1)]);
     }
 
     #[test]
@@ -961,17 +949,17 @@ mod tests {
             coeff: one(),
             factors: vec![tensor(A, &[10, 11]), tensor(B, &[10, 11])],
         };
-        let split = parenthesize::select(&[], &term, &[true, false]);
+        let split = bipartition_term(&[], &term, &[true, false]);
 
         let (left_owned, right_owned) = canon_split(&computation, &[], split).unwrap().unwrap();
 
         assert_eq!(left_owned, right_owned);
         assert_eq!(
-            left_owned.0.factors[0].indices,
+            left_owned.left.factors[0].indices,
             vec![IndexId(0), IndexId(1)]
         );
         assert_eq!(
-            left_owned.2.factors[0].indices,
+            left_owned.right.factors[0].indices,
             vec![IndexId(0), IndexId(1)]
         );
     }
@@ -985,18 +973,17 @@ mod tests {
             factors: vec![tensor(A, &[10, 11, 12]), tensor(B, &[11]), tensor(C, &[12])],
         };
         let definition_exts = [index(10)];
-        let split = parenthesize::select(&definition_exts, &term, &[true, true, false]);
+        let split = bipartition_term(&definition_exts, &term, &[true, true, false]);
 
         let (canonical, _) = canon_split(&computation, &definition_exts, split)
             .unwrap()
             .unwrap();
 
-        let (left, left_exts, right, right_exts, contracted) = &canonical;
-        assert_eq!(left.sums, vec![index(2)]);
-        assert_eq!(left_exts, &vec![index(0), index(1)]);
-        assert_eq!(right.sums, Vec::new());
-        assert_eq!(right_exts, &vec![index(1)]);
-        assert_eq!(contracted, &vec![index(1)]);
+        assert_eq!(canonical.left.sums, vec![index(2)]);
+        assert_eq!(canonical.left_exts, vec![index(0), index(1)]);
+        assert_eq!(canonical.right.sums, Vec::new());
+        assert_eq!(canonical.right_exts, vec![index(1)]);
+        assert_eq!(canonical.contracted, vec![index(1)]);
     }
 
     #[test]
