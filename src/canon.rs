@@ -5,7 +5,7 @@ use crate::repr::{
     TensorRef, Term,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +37,7 @@ pub(crate) fn canon_term(
     let fixed_ids = fixed_indices
         .iter()
         .map(|index| index.id)
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
     if is_zero(&term.coeff) {
         return Ok(None);
     }
@@ -243,7 +243,7 @@ fn symmetry_variants(
     product
 }
 
-fn rename_dummies(mut term: Term, fixed_ids: &BTreeSet<IndexId>) -> Result<Term, CanonError> {
+fn rename_dummies(mut term: Term, fixed_ids: &[IndexId]) -> Result<Term, CanonError> {
     let sum_ranges = term
         .sums
         .iter()
@@ -277,28 +277,29 @@ fn rename_dummies(mut term: Term, fixed_ids: &BTreeSet<IndexId>) -> Result<Term,
 }
 
 fn compare_term_bodies(left: &Term, right: &Term) -> Ordering {
-    left.factors
+    let left_factors = left.factors.iter().map(|factor| factor.tensor);
+    let right_factors = right.factors.iter().map(|factor| factor.tensor);
+    let ordering = left_factors.cmp(right_factors);
+    if ordering != Ordering::Equal {
+        return ordering;
+    }
+
+    let left_indices = left.factors.iter().flat_map(|factor| factor.indices.iter());
+    let right_indices = right
+        .factors
         .iter()
-        .map(|factor| factor.tensor)
-        .cmp(right.factors.iter().map(|factor| factor.tensor))
-        .then_with(|| {
-            left.factors
-                .iter()
-                .flat_map(|factor| factor.indices.iter().copied())
-                .cmp(
-                    right
-                        .factors
-                        .iter()
-                        .flat_map(|factor| factor.indices.iter().copied()),
-                )
-        })
-        .then_with(|| left.sums.cmp(&right.sums))
+        .flat_map(|factor| factor.indices.iter());
+    let ordering = left_indices.cmp(right_indices);
+    if ordering != Ordering::Equal {
+        return ordering;
+    }
+
+    let left_ranges = left.sums.iter().map(|index| index.range);
+    let right_ranges = right.sums.iter().map(|index| index.range);
+    left_ranges.cmp(right_ranges)
 }
 
-fn canonical_sum_ids(
-    fixed_ids: &BTreeSet<IndexId>,
-    count: usize,
-) -> Result<Vec<IndexId>, CanonError> {
+fn canonical_sum_ids(fixed_ids: &[IndexId], count: usize) -> Result<Vec<IndexId>, CanonError> {
     if count == 0 {
         return Ok(Vec::new());
     }
