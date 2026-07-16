@@ -9,6 +9,7 @@ mod permutation;
 pub mod repr;
 pub mod state;
 pub mod transition;
+pub mod verify;
 
 pub use action::{
     Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueChoiceError, BicliqueSpace,
@@ -23,6 +24,7 @@ pub use repr::{
 };
 pub use state::{State, StateError};
 pub use transition::{ApplyError, apply};
+pub use verify::{VerifyError, equivalent_computations, equivalent_states};
 
 #[cfg(test)]
 mod tests {
