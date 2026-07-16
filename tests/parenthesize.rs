@@ -70,6 +70,13 @@ fn exposes_a_non_symbolic_parenthesization_space() {
     };
     assert_eq!(space.target(), target());
     assert_eq!(space.factor_count(), 3);
+    assert_eq!(
+        space.snapshot(),
+        (
+            state.computation().definitions[0].exts.clone(),
+            state.computation().definitions[0].rhs[0].clone(),
+        )
+    );
 
     let action = space.select(&[true, true, false]).unwrap();
     assert_eq!(action.query(), ActionQuery::Parenthesize(target()));

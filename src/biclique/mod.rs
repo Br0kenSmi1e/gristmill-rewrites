@@ -19,6 +19,9 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+/// One owned semantic biclique candidate.
+pub type BicliqueSnapshot = (Vec<Index>, Vec<Term>, Vec<Index>, Vec<Term>);
+
 /// The policy interface for one biclique factorization query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BicliqueSpace {
@@ -31,6 +34,30 @@ pub struct BicliqueSpace {
 impl BicliqueSpace {
     pub fn target(&self) -> DefinitionPosition {
         self.target
+    }
+
+    /// Return owned semantic descriptions of the factorization candidates.
+    ///
+    /// Each tuple contains the left external indices and terms followed by the
+    /// right external indices and terms. Term order matches the masks accepted
+    /// by [`Self::select`], and the candidate weights are included in the term
+    /// coefficients.
+    pub fn snapshot(&self) -> Vec<BicliqueSnapshot> {
+        self.candidates
+            .iter()
+            .map(|(graph, biclique)| {
+                let (key, data) = &self.graphs[*graph];
+                let left =
+                    side_definition(self.base, &key.left_exts, &data.left_nodes, &biclique.left);
+                let right = side_definition(
+                    self.base,
+                    &key.right_exts,
+                    &data.right_nodes,
+                    &biclique.right,
+                );
+                (left.exts, left.rhs, right.exts, right.rhs)
+            })
+            .collect()
     }
 
     pub fn candidate_count(&self) -> usize {

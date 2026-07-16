@@ -2,7 +2,7 @@
 
 use crate::{biclique, canon::CanonError, parenthesize, permutation, state::State};
 
-pub use crate::biclique::{BicliqueAction, BicliqueChoiceError, BicliqueSpace};
+pub use crate::biclique::{BicliqueAction, BicliqueChoiceError, BicliqueSnapshot, BicliqueSpace};
 pub use crate::parenthesize::{ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace};
 pub use crate::permutation::{PermutationAction, PermutationChoiceError, PermutationSpace};
 

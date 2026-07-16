@@ -31,6 +31,11 @@ impl ParenthesizeSpace {
         self.target
     }
 
+    /// Return an owned semantic description of the parenthesization problem.
+    pub fn snapshot(&self) -> (Vec<Index>, Term) {
+        (self.exts.clone(), self.term.clone())
+    }
+
     pub fn factor_count(&self) -> usize {
         self.term.factors.len()
     }

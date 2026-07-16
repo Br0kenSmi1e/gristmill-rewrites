@@ -25,6 +25,15 @@ fn exposes_masked_maximal_bicliques() {
     assert_eq!(space.shape(0), Some((2, 2)));
     assert_eq!(space.shape(1), None);
     assert_eq!(
+        space.snapshot(),
+        vec![(
+            Vec::new(),
+            vec![single(1, A), single(2, B)],
+            Vec::new(),
+            vec![single(2, C), single(3, D)],
+        )]
+    );
+    assert_eq!(
         space.select(1, &[true], &[true]),
         Err(BicliqueChoiceError::CandidateOutOfBounds { index: 1, len: 1 })
     );
