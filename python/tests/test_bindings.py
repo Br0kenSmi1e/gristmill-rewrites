@@ -75,6 +75,7 @@ def test_exports_only_the_initial_rewrite_surface():
         "TensorInfo",
         "TensorRef",
         "Term",
+        "equivalent",
         "from_json",
         "read_json",
         "to_json",
@@ -119,6 +120,7 @@ def test_json_round_trip_preserves_state(tmp_path):
     loaded = gr.read_json(path)
 
     assert gr.to_json(loaded) == gr.to_json(state)
+    assert gr.equivalent(loaded, state)
 
 
 def test_parenthesization_space_shows_the_target_term_and_applies_an_action():

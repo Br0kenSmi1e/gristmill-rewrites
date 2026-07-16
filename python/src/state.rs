@@ -128,8 +128,14 @@ pub(crate) fn write_json(state: &PyState, path: PathBuf) -> PyResult<()> {
     rust::io::write_json(path, &state.inner).map_err(error::display)
 }
 
+#[pyfunction]
+pub(crate) fn equivalent(lhs: &PyState, rhs: &PyState) -> PyResult<bool> {
+    rust::equivalent_states(&lhs.inner, &rhs.inner).map_err(error::debug)
+}
+
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyState>()?;
+    module.add_function(wrap_pyfunction!(equivalent, module)?)?;
     module.add_function(wrap_pyfunction!(from_json, module)?)?;
     module.add_function(wrap_pyfunction!(read_json, module)?)?;
     module.add_function(wrap_pyfunction!(to_json, module)?)?;

@@ -38,6 +38,16 @@ The parenthesization snapshot is `(exts, term)`. A biclique snapshot is a
 tuple of candidates, each shaped as
 `(left_exts, left_terms, right_exts, right_terms)`.
 
+Exact equivalence checking is available as a module-level function:
+
+```python
+from gristmill_rewrites import equivalent, read_json
+
+working = read_json("working_eqn.json")
+optimized = read_json("gristmill_optimized.json")
+assert equivalent(working, optimized)
+```
+
 `State` and its symbolic representation are exposed through immutable Python
 objects. The rewrite protocol consists only of `State.query`,
 `Space.snapshot`, `Space.select`, and `State.apply`. Actions are opaque and can
