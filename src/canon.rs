@@ -276,7 +276,7 @@ fn rename_dummies(mut term: Term, fixed_ids: &[IndexId]) -> Result<Term, CanonEr
     Ok(term)
 }
 
-fn compare_term_bodies(left: &Term, right: &Term) -> Ordering {
+pub(crate) fn compare_term_bodies(left: &Term, right: &Term) -> Ordering {
     let left_factors = left.factors.iter().map(|factor| factor.tensor);
     let right_factors = right.factors.iter().map(|factor| factor.tensor);
     let ordering = left_factors.cmp(right_factors);

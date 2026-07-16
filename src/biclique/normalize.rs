@@ -1,53 +1,97 @@
 //! Canonical normalization of term bipartitions.
 
 use crate::{
-    canon::{CanonError, canon_term},
+    canon::{CanonError, canon_term, compare_term_bodies},
     parenthesize::{TermBipartition, bipartition_term},
-    repr::{Coefficient, Computation, Index, IndexId, Term},
+    repr::{Coefficient, Computation, Index, IndexId, TensorDef, Term},
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-pub(super) fn enumerate_splits(exts: &[Index], term: &Term) -> Vec<TermBipartition> {
+pub(super) fn normalize_definition(
+    computation: &Computation,
+    definition: &TensorDef,
+) -> Result<Vec<(usize, TermBipartition)>, CanonError> {
+    let mut canonical = Vec::new();
+
+    for (source_term, term) in definition.rhs.iter().enumerate() {
+        for bipartition in enumerate_bipartitions(&definition.exts, term) {
+            let aligned = align_bipartition(&definition.exts, bipartition)?;
+            let Some(bipartition) = canon_bipartition(computation, &definition.exts, aligned)?
+            else {
+                continue;
+            };
+
+            canonical.push((source_term, bipartition));
+        }
+    }
+
+    Ok(canonical)
+}
+
+pub(super) fn enumerate_bipartitions(exts: &[Index], term: &Term) -> Vec<TermBipartition> {
     if term.factors.len() < 2 {
         return Vec::new();
     }
 
-    let split_count = 1_usize
-        .checked_shl((term.factors.len() - 1) as u32)
-        .and_then(|count| count.checked_sub(1))
-        .expect("the split count must fit in usize");
-    let mut splits = Vec::with_capacity(split_count);
+    let orientation_count = 1_usize
+        .checked_shl(term.factors.len() as u32)
+        .expect("the bipartition count must fit in usize");
+    let mut bipartitions = Vec::with_capacity(orientation_count - 2);
 
-    for choice in 0..split_count {
-        let mut left = vec![true];
-        left.extend((0..term.factors.len() - 1).map(|position| choice & (1 << position) != 0));
-        splits.push(bipartition_term(exts, term, &left));
+    for choice in 1..orientation_count - 1 {
+        let left = (0..term.factors.len())
+            .map(|position| choice & (1 << position) != 0)
+            .collect::<Vec<_>>();
+        bipartitions.push(bipartition_term(exts, term, &left));
     }
 
-    splits
+    bipartitions
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Owner {
-    Left,
-    Right,
-}
-
-impl Owner {
-    pub(super) fn opposite(self) -> Self {
-        match self {
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
-
-pub(super) fn canon_split(
-    computation: &Computation,
+pub(super) fn align_bipartition(
     definition_exts: &[Index],
-    split: TermBipartition,
-) -> Result<Option<(TermBipartition, TermBipartition)>, CanonError> {
+    bipartition: TermBipartition,
+) -> Result<TermBipartition, CanonError> {
+    let external_ids = definition_exts
+        .iter()
+        .map(|index| index.id)
+        .collect::<Vec<_>>();
+    let contracted_ids = canonical_index_ids(&external_ids, bipartition.contracted.len())?;
+    let contracted_renames = bipartition
+        .contracted
+        .iter()
+        .zip(&contracted_ids)
+        .map(|(old, new)| (old.id, *new))
+        .collect::<BTreeMap<_, _>>();
+    let fixed_ids = external_ids
+        .iter()
+        .chain(&contracted_ids)
+        .copied()
+        .collect::<Vec<_>>();
+
+    let left_sum_ids = canonical_index_ids(&fixed_ids, bipartition.left.sums.len())?;
+    let mut left_renames = contracted_renames.clone();
+    left_renames.extend(
+        bipartition
+            .left
+            .sums
+            .iter()
+            .zip(left_sum_ids)
+            .map(|(old, new)| (old.id, new)),
+    );
+
+    let right_sum_ids = canonical_index_ids(&fixed_ids, bipartition.right.sums.len())?;
+    let mut right_renames = contracted_renames.clone();
+    right_renames.extend(
+        bipartition
+            .right
+            .sums
+            .iter()
+            .zip(right_sum_ids)
+            .map(|(old, new)| (old.id, new)),
+    );
+
     let TermBipartition {
         coeff,
         left,
@@ -55,221 +99,150 @@ pub(super) fn canon_split(
         right,
         right_exts,
         contracted,
-    } = split;
-    let mut candidates = Vec::new();
-    let mut zero = false;
+    } = bipartition;
 
-    for order in contracted_orders(&contracted) {
-        let scope = definition_exts
-            .iter()
-            .chain(&order)
-            .copied()
-            .collect::<Vec<_>>();
-        let (fixed, aligned_left) = align_term(&scope, &left)?;
-        let (_, aligned_right) = align_term(&scope, &right)?;
-        let Some(mut canonical_left) = canon_term(computation, &fixed, &aligned_left)? else {
-            zero = true;
-            continue;
-        };
-        let Some(mut canonical_right) = canon_term(computation, &fixed, &aligned_right)? else {
-            zero = true;
-            continue;
-        };
-
-        canonical_left.coeff *= canonical_right.coeff.clone();
-        canonical_right.coeff = Coefficient::from_integer(1.into());
-
-        candidates.push(TermBipartition {
-            coeff: coeff.clone(),
-            left: canonical_left,
-            left_exts: align_exts(&scope, &fixed, &left_exts)?,
-            right: canonical_right,
-            right_exts: align_exts(&scope, &fixed, &right_exts)?,
-            contracted: fixed[definition_exts.len()..].to_vec(),
-        });
-    }
-
-    if zero || candidates.is_empty() {
-        return Ok(None);
-    }
-
-    let Some(left_owned) = choose_candidate(&candidates, Owner::Left) else {
-        return Ok(None);
-    };
-    let Some(right_owned) = choose_candidate(&candidates, Owner::Right) else {
-        return Ok(None);
-    };
-
-    Ok(Some((left_owned, right_owned)))
+    Ok(TermBipartition {
+        coeff,
+        left: rename_term(left, &left_renames),
+        left_exts: rename_indices(left_exts, &contracted_renames),
+        right: rename_term(right, &right_renames),
+        right_exts: rename_indices(right_exts, &contracted_renames),
+        contracted: rename_indices(contracted, &contracted_renames),
+    })
 }
 
-fn contracted_orders(contracted: &[Index]) -> Vec<Vec<Index>> {
+fn canonical_index_ids(reserved: &[IndexId], count: usize) -> Result<Vec<IndexId>, CanonError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut ids = Vec::with_capacity(count);
+    for value in 0..=u32::MAX {
+        let id = IndexId(value);
+        if !reserved.contains(&id) {
+            ids.push(id);
+            if ids.len() == count {
+                return Ok(ids);
+            }
+        }
+    }
+
+    Err(CanonError::ExhaustedIndexIds)
+}
+
+fn rename_term(mut term: Term, renames: &BTreeMap<IndexId, IndexId>) -> Term {
+    term.sums = rename_indices(term.sums, renames);
+
+    for factor in &mut term.factors {
+        for index in &mut factor.indices {
+            if let Some(&renamed) = renames.get(index) {
+                *index = renamed;
+            }
+        }
+    }
+
+    term
+}
+
+fn rename_indices(mut indices: Vec<Index>, renames: &BTreeMap<IndexId, IndexId>) -> Vec<Index> {
+    for index in &mut indices {
+        if let Some(&renamed) = renames.get(&index.id) {
+            index.id = renamed;
+        }
+    }
+
+    indices
+}
+
+pub(super) fn canon_bipartition(
+    computation: &Computation,
+    definition_exts: &[Index],
+    aligned: TermBipartition,
+) -> Result<Option<TermBipartition>, CanonError> {
+    let fixed = definition_exts
+        .iter()
+        .chain(&aligned.contracted)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut best: Option<TermBipartition> = None;
+    let mut coeff_conflict = false;
+
+    for permutation in contracted_permutations(&aligned.contracted) {
+        let renames = permutation
+            .iter()
+            .zip(&aligned.contracted)
+            .map(|(&source, target)| (aligned.contracted[source].id, target.id))
+            .collect::<BTreeMap<_, _>>();
+        let left = rename_term(aligned.left.clone(), &renames);
+        let right = rename_term(aligned.right.clone(), &renames);
+        let Some(mut left) = canon_term(computation, &fixed, &left)? else {
+            return Ok(None);
+        };
+        let Some(mut right) = canon_term(computation, &fixed, &right)? else {
+            return Ok(None);
+        };
+
+        let coeff = &aligned.coeff * &left.coeff * &right.coeff;
+        left.coeff = Coefficient::from_integer(1.into());
+        right.coeff = Coefficient::from_integer(1.into());
+        let candidate = TermBipartition {
+            coeff,
+            left,
+            right,
+            ..aligned.clone()
+        };
+
+        match best.as_ref().map(|best| {
+            (
+                compare_term_bodies(&candidate.left, &best.left)
+                    .then_with(|| compare_term_bodies(&candidate.right, &best.right)),
+                candidate.coeff != best.coeff,
+            )
+        }) {
+            None | Some((Ordering::Less, _)) => {
+                best = Some(candidate);
+                coeff_conflict = false;
+            }
+            Some((Ordering::Equal, conflict)) => coeff_conflict |= conflict,
+            Some((Ordering::Greater, _)) => {}
+        }
+    }
+
+    if coeff_conflict {
+        return Ok(None);
+    }
+
+    Ok(Some(best.expect(
+        "the identity contracted permutation is always generated",
+    )))
+}
+
+fn contracted_permutations(contracted: &[Index]) -> Vec<Vec<usize>> {
     fn generate(
         contracted: &[Index],
-        ranges: &[crate::repr::RangeId],
         position: usize,
-        used: &mut [bool],
-        current: &mut Vec<Index>,
-        result: &mut Vec<Vec<Index>>,
+        current: &mut [usize],
+        result: &mut Vec<Vec<usize>>,
     ) {
-        if position == contracted.len() {
-            result.push(current.clone());
+        if position == current.len() {
+            result.push(current.to_vec());
             return;
         }
 
-        for index in 0..contracted.len() {
-            if used[index] || contracted[index].range != ranges[position] {
+        for next in position..current.len() {
+            let source = current[next];
+            if contracted[source].range != contracted[position].range {
                 continue;
             }
-            used[index] = true;
-            current.push(contracted[index]);
-            generate(contracted, ranges, position + 1, used, current, result);
-            current.pop();
-            used[index] = false;
+
+            current.swap(position, next);
+            generate(contracted, position + 1, current, result);
+            current.swap(position, next);
         }
     }
 
-    let mut contracted = contracted.to_vec();
-    contracted.sort_by_key(|index| (index.range, index.id));
-    let ranges = contracted
-        .iter()
-        .map(|index| index.range)
-        .collect::<Vec<_>>();
+    let mut current = (0..contracted.len()).collect::<Vec<_>>();
     let mut result = Vec::new();
-    generate(
-        &contracted,
-        &ranges,
-        0,
-        &mut vec![false; contracted.len()],
-        &mut Vec::with_capacity(contracted.len()),
-        &mut result,
-    );
+    generate(contracted, 0, &mut current, &mut result);
     result
-}
-
-fn align_term(scope: &[Index], term: &Term) -> Result<(Vec<Index>, Term), CanonError> {
-    let mut ids = BTreeMap::new();
-    let mut fixed = Vec::with_capacity(scope.len());
-    for (position, index) in scope.iter().enumerate() {
-        let id = index_id(position)?;
-        if ids.insert(index.id, id).is_some() {
-            return Err(CanonError::DuplicateFixedIndex { index: index.id });
-        }
-        fixed.push(Index {
-            id,
-            range: index.range,
-        });
-    }
-
-    let mut sums = Vec::with_capacity(term.sums.len());
-    let mut sum_ids = BTreeSet::new();
-    for (position, sum) in term.sums.iter().enumerate() {
-        if !sum_ids.insert(sum.id) {
-            return Err(CanonError::DuplicateSummedIndex { index: sum.id });
-        }
-        if ids.contains_key(&sum.id) {
-            return Err(CanonError::FixedAndSummedIndexOverlap { index: sum.id });
-        }
-        let position = scope
-            .len()
-            .checked_add(position)
-            .ok_or(CanonError::ExhaustedIndexIds)?;
-        let id = index_id(position)?;
-        ids.insert(sum.id, id);
-        sums.push(Index {
-            id,
-            range: sum.range,
-        });
-    }
-
-    let factors = term
-        .factors
-        .iter()
-        .map(|factor| {
-            let indices = factor
-                .indices
-                .iter()
-                .map(|index| {
-                    ids.get(index)
-                        .copied()
-                        .ok_or(CanonError::UnknownIndex { index: *index })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(crate::repr::TensorRef {
-                tensor: factor.tensor,
-                indices,
-            })
-        })
-        .collect::<Result<Vec<_>, CanonError>>()?;
-
-    Ok((
-        fixed,
-        Term {
-            sums,
-            coeff: term.coeff.clone(),
-            factors,
-        },
-    ))
-}
-
-fn align_exts(
-    scope: &[Index],
-    fixed: &[Index],
-    selected: &[Index],
-) -> Result<Vec<Index>, CanonError> {
-    if let Some(index) = selected
-        .iter()
-        .find(|selected| !scope.iter().any(|index| index.id == selected.id))
-    {
-        return Err(CanonError::UnknownIndex { index: index.id });
-    }
-
-    let selected = selected
-        .iter()
-        .map(|index| index.id)
-        .collect::<BTreeSet<_>>();
-    Ok(scope
-        .iter()
-        .zip(fixed)
-        .filter_map(|(original, aligned)| selected.contains(&original.id).then_some(*aligned))
-        .collect())
-}
-
-fn index_id(position: usize) -> Result<IndexId, CanonError> {
-    u32::try_from(position)
-        .map(IndexId)
-        .map_err(|_| CanonError::ExhaustedIndexIds)
-}
-
-fn choose_candidate(candidates: &[TermBipartition], owner: Owner) -> Option<TermBipartition> {
-    let mut best = 0;
-    for candidate in 1..candidates.len() {
-        if compare_candidate(&candidates[candidate], &candidates[best], owner) == Ordering::Less {
-            best = candidate;
-        }
-    }
-
-    if candidates.iter().any(|candidate| {
-        compare_candidate(candidate, &candidates[best], owner) == Ordering::Equal
-            && candidate.left.coeff != candidates[best].left.coeff
-    }) {
-        None
-    } else {
-        Some(candidates[best].clone())
-    }
-}
-
-fn compare_candidate(left: &TermBipartition, right: &TermBipartition, owner: Owner) -> Ordering {
-    match owner {
-        Owner::Left => compare_term(&left.left, &right.left)
-            .then_with(|| compare_term(&left.right, &right.right)),
-        Owner::Right => compare_term(&left.right, &right.right)
-            .then_with(|| compare_term(&left.left, &right.left)),
-    }
-}
-
-fn compare_term(left: &Term, right: &Term) -> Ordering {
-    left.sums
-        .cmp(&right.sums)
-        .then_with(|| left.factors.cmp(&right.factors))
 }

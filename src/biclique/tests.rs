@@ -1,12 +1,14 @@
 //! Unit tests for biclique normalization, graph construction, and search.
 
 use super::{
-    graph::Edge,
-    normalize::{canon_split, enumerate_splits},
+    graph::{Edge, build},
+    normalize::{
+        align_bipartition, canon_bipartition, enumerate_bipartitions, normalize_definition,
+    },
     *,
 };
 use crate::{
-    parenthesize::bipartition_term,
+    parenthesize::{TermBipartition, bipartition_term},
     repr::{Coefficient, Computation, IndexId, RangeId, TensorId, TensorInfo, TensorRef},
 };
 
@@ -17,37 +19,45 @@ const C: TensorId = TensorId(2);
 const D: TensorId = TensorId(3);
 
 #[test]
-fn enumerates_each_unordered_factor_partition_once() {
+fn enumerates_each_oriented_factor_bipartition() {
     let term = Term {
         sums: Vec::new(),
         coeff: one(),
         factors: vec![scalar(A), scalar(B), scalar(C)],
     };
 
-    let splits = enumerate_splits(&[], &term);
+    let bipartitions = enumerate_bipartitions(&[], &term);
 
-    assert_eq!(splits.len(), 3);
-    assert_eq!(tensors(&splits[0].left), vec![A]);
-    assert_eq!(tensors(&splits[0].right), vec![B, C]);
-    assert_eq!(tensors(&splits[1].left), vec![A, B]);
-    assert_eq!(tensors(&splits[1].right), vec![C]);
-    assert_eq!(tensors(&splits[2].left), vec![A, C]);
-    assert_eq!(tensors(&splits[2].right), vec![B]);
+    assert_eq!(bipartitions.len(), 6);
+    assert_eq!(tensors(&bipartitions[0].left), vec![A]);
+    assert_eq!(tensors(&bipartitions[0].right), vec![B, C]);
+    assert_eq!(tensors(&bipartitions[1].left), vec![B]);
+    assert_eq!(tensors(&bipartitions[1].right), vec![A, C]);
+    assert_eq!(tensors(&bipartitions[2].left), vec![A, B]);
+    assert_eq!(tensors(&bipartitions[2].right), vec![C]);
+    assert_eq!(tensors(&bipartitions[3].left), vec![C]);
+    assert_eq!(tensors(&bipartitions[3].right), vec![A, B]);
+    assert_eq!(tensors(&bipartitions[4].left), vec![A, C]);
+    assert_eq!(tensors(&bipartitions[4].right), vec![B]);
+    assert_eq!(tensors(&bipartitions[5].left), vec![B, C]);
+    assert_eq!(tensors(&bipartitions[5].right), vec![A]);
 }
 
 #[test]
-fn includes_the_split_of_a_binary_term() {
+fn includes_the_bipartition_of_a_binary_term() {
     let term = Term {
         sums: Vec::new(),
         coeff: one(),
         factors: vec![scalar(A), scalar(B)],
     };
 
-    let splits = enumerate_splits(&[], &term);
+    let bipartitions = enumerate_bipartitions(&[], &term);
 
-    assert_eq!(splits.len(), 1);
-    assert_eq!(tensors(&splits[0].left), vec![A]);
-    assert_eq!(tensors(&splits[0].right), vec![B]);
+    assert_eq!(bipartitions.len(), 2);
+    assert_eq!(tensors(&bipartitions[0].left), vec![A]);
+    assert_eq!(tensors(&bipartitions[0].right), vec![B]);
+    assert_eq!(tensors(&bipartitions[1].left), vec![B]);
+    assert_eq!(tensors(&bipartitions[1].right), vec![A]);
 }
 
 #[test]
@@ -58,97 +68,169 @@ fn separates_child_local_and_contracted_sums() {
         factors: vec![tensor(A, &[2, 0]), tensor(B, &[0, 1]), tensor(C, &[1, 3])],
     };
 
-    let splits = enumerate_splits(&[index(2), index(3)], &term);
-    let split = &splits[1];
+    let bipartitions = enumerate_bipartitions(&[index(2), index(3)], &term);
+    let bipartition = &bipartitions[2];
 
-    assert_eq!(split.left.sums, vec![index(0)]);
-    assert!(split.right.sums.is_empty());
-    assert_eq!(split.left_exts, vec![index(2), index(1)]);
-    assert_eq!(split.right_exts, vec![index(3), index(1)]);
-    assert_eq!(split.contracted, vec![index(1)]);
-    assert_eq!(split.left.coeff, one());
-    assert_eq!(split.right.coeff, one());
+    assert_eq!(bipartition.left.sums, vec![index(0)]);
+    assert!(bipartition.right.sums.is_empty());
+    assert_eq!(bipartition.left_exts, vec![index(2), index(1)]);
+    assert_eq!(bipartition.right_exts, vec![index(3), index(1)]);
+    assert_eq!(bipartition.contracted, vec![index(1)]);
+    assert_eq!(bipartition.left.coeff, one());
+    assert_eq!(bipartition.right.coeff, one());
 }
 
 #[test]
-fn canonicalizes_both_owner_forms_when_they_differ() {
+fn canonicalizes_each_orientation_by_its_left_side() {
     let computation = tensor_computation(&[(A, 2), (B, 2)]);
     let term = Term {
         sums: vec![index(10), index(11)],
         coeff: one(),
         factors: vec![tensor(A, &[10, 11]), tensor(B, &[11, 10])],
     };
-    let split = bipartition_term(&[], &term, &[true, false]);
+    let aligned = align_bipartition(&[], bipartition_term(&[], &term, &[true, false])).unwrap();
+    let reversed = align_bipartition(&[], bipartition_term(&[], &term, &[false, true])).unwrap();
 
-    let (left_owned, right_owned) = canon_split(&computation, &[], split).unwrap().unwrap();
+    let left_first = canon_bipartition(&computation, &[], aligned)
+        .unwrap()
+        .unwrap();
+    let reversed_left_first = canon_bipartition(&computation, &[], reversed)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
-        left_owned.left.factors[0].indices,
+        left_first.left.factors[0].indices,
         vec![IndexId(0), IndexId(1)]
     );
     assert_eq!(
-        left_owned.right.factors[0].indices,
+        left_first.right.factors[0].indices,
         vec![IndexId(1), IndexId(0)]
     );
     assert_eq!(
-        right_owned.left.factors[0].indices,
-        vec![IndexId(1), IndexId(0)]
-    );
-    assert_eq!(
-        right_owned.right.factors[0].indices,
+        reversed_left_first.left.factors[0].indices,
         vec![IndexId(0), IndexId(1)]
     );
-    assert_eq!(left_owned.contracted, vec![index(0), index(1)]);
-    assert_eq!(right_owned.contracted, vec![index(0), index(1)]);
+    assert_eq!(
+        reversed_left_first.right.factors[0].indices,
+        vec![IndexId(1), IndexId(0)]
+    );
+    assert_eq!(left_first.contracted, vec![index(0), index(1)]);
+    assert_eq!(reversed_left_first.contracted, vec![index(0), index(1)]);
 }
 
 #[test]
-fn returns_both_owner_forms_when_they_are_the_same() {
+fn returns_the_left_first_form() {
     let computation = tensor_computation(&[(A, 2), (B, 2)]);
     let term = Term {
         sums: vec![index(10), index(11)],
         coeff: one(),
         factors: vec![tensor(A, &[10, 11]), tensor(B, &[10, 11])],
     };
-    let split = bipartition_term(&[], &term, &[true, false]);
+    let bipartition = bipartition_term(&[], &term, &[true, false]);
+    let aligned = align_bipartition(&[], bipartition).unwrap();
 
-    let (left_owned, right_owned) = canon_split(&computation, &[], split).unwrap().unwrap();
-
-    assert_eq!(left_owned, right_owned);
-    assert_eq!(
-        left_owned.left.factors[0].indices,
-        vec![IndexId(0), IndexId(1)]
-    );
-    assert_eq!(
-        left_owned.right.factors[0].indices,
-        vec![IndexId(0), IndexId(1)]
-    );
-}
-
-#[test]
-fn aligns_local_sums_after_definition_and_contracted_indices() {
-    let computation = tensor_computation(&[(A, 3), (B, 1), (C, 1)]);
-    let term = Term {
-        sums: vec![index(11), index(12)],
-        coeff: one(),
-        factors: vec![tensor(A, &[10, 11, 12]), tensor(B, &[11]), tensor(C, &[12])],
-    };
-    let definition_exts = [index(10)];
-    let split = bipartition_term(&definition_exts, &term, &[true, true, false]);
-
-    let (canonical, _) = canon_split(&computation, &definition_exts, split)
+    let canonical = canon_bipartition(&computation, &[], aligned)
         .unwrap()
         .unwrap();
 
-    assert_eq!(canonical.left.sums, vec![index(2)]);
-    assert_eq!(canonical.left_exts, vec![index(0), index(1)]);
-    assert_eq!(canonical.right.sums, Vec::new());
-    assert_eq!(canonical.right_exts, vec![index(1)]);
-    assert_eq!(canonical.contracted, vec![index(1)]);
+    assert_eq!(
+        canonical.left.factors[0].indices,
+        vec![IndexId(0), IndexId(1)]
+    );
+    assert_eq!(
+        canonical.right.factors[0].indices,
+        vec![IndexId(0), IndexId(1)]
+    );
 }
 
 #[test]
-fn builds_owner_graphs_and_mirrors_equal_interfaces() {
+fn moves_child_coefficients_to_the_canonical_bipartition() {
+    let computation = tensor_computation(&[(A, 0), (B, 0)]);
+    let aligned = TermBipartition {
+        coeff: integer(5),
+        left: Term {
+            sums: Vec::new(),
+            coeff: integer(2),
+            factors: vec![scalar(A)],
+        },
+        left_exts: Vec::new(),
+        right: Term {
+            sums: Vec::new(),
+            coeff: integer(3),
+            factors: vec![scalar(B)],
+        },
+        right_exts: Vec::new(),
+        contracted: Vec::new(),
+    };
+
+    let candidate = canon_bipartition(&computation, &[], aligned)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(candidate.coeff, integer(30));
+    assert_eq!(candidate.left.coeff, one());
+    assert_eq!(candidate.right.coeff, one());
+}
+
+#[test]
+fn aligns_new_indices_without_renaming_definition_externals() {
+    let term = Term {
+        sums: vec![index(11), index(12), index(10)],
+        coeff: one(),
+        factors: vec![
+            tensor(A, &[0, 2, 11, 12, 10]),
+            tensor(B, &[11]),
+            tensor(C, &[12, 10]),
+        ],
+    };
+    let definition_exts = [index(0), index(2)];
+    let bipartition = bipartition_term(&definition_exts, &term, &[true, true, false]);
+
+    let aligned = align_bipartition(&definition_exts, bipartition).unwrap();
+
+    assert_eq!(aligned.left.sums, vec![index(4)]);
+    assert_eq!(aligned.left.factors[0].indices, ids(&[0, 2, 4, 1, 3]));
+    assert_eq!(aligned.left.factors[1].indices, ids(&[4]));
+    assert_eq!(
+        aligned.left_exts,
+        vec![index(0), index(2), index(1), index(3)]
+    );
+    assert_eq!(aligned.right.sums, Vec::new());
+    assert_eq!(aligned.right.factors[0].indices, ids(&[1, 3]));
+    assert_eq!(aligned.right_exts, vec![index(1), index(3)]);
+    assert_eq!(aligned.contracted, vec![index(1), index(3)]);
+}
+
+#[test]
+fn contracted_permutations_preserve_ranges() {
+    let computation = tensor_computation(&[(A, 2), (B, 2)]);
+    let contracted = vec![index_in(0, RangeId(1)), index_in(1, RANGE)];
+    let aligned = TermBipartition {
+        coeff: one(),
+        left: Term {
+            sums: Vec::new(),
+            coeff: one(),
+            factors: vec![tensor(A, &[1, 0])],
+        },
+        left_exts: contracted.clone(),
+        right: Term {
+            sums: Vec::new(),
+            coeff: one(),
+            factors: vec![tensor(B, &[0, 1])],
+        },
+        right_exts: contracted.clone(),
+        contracted,
+    };
+
+    let canonical = canon_bipartition(&computation, &[], aligned.clone())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(canonical, aligned);
+}
+
+#[test]
+fn builds_a_graph_from_both_bipartition_orientations() {
     let computation = tensor_computation(&[(A, 0), (B, 0), (C, 0)]);
     let definition = TensorDef {
         base: D,
@@ -167,9 +249,10 @@ fn builds_owner_graphs_and_mirrors_equal_interfaces() {
         ],
     };
 
-    let graphs = build_graphs(&computation, &definition).unwrap();
+    let canonical = normalize_definition(&computation, &definition).unwrap();
+    let graphs = build(canonical);
 
-    assert_eq!(graphs.len(), 2);
+    assert_eq!(graphs.len(), 1);
     for graph in graphs {
         assert!(graph.left_exts.is_empty());
         assert!(graph.right_exts.is_empty());
@@ -267,8 +350,12 @@ fn scalar(tensor: TensorId) -> TensorRef {
 fn tensor(tensor: TensorId, indices: &[u32]) -> TensorRef {
     TensorRef {
         tensor,
-        indices: indices.iter().copied().map(IndexId).collect(),
+        indices: ids(indices),
     }
+}
+
+fn ids(indices: &[u32]) -> Vec<IndexId> {
+    indices.iter().copied().map(IndexId).collect()
 }
 
 fn tensors(term: &Term) -> Vec<TensorId> {
@@ -322,9 +409,13 @@ fn edge(coeff: i64, terms: &[usize]) -> Edge {
 }
 
 fn index(id: u32) -> Index {
+    index_in(id, RANGE)
+}
+
+fn index_in(id: u32, range: RangeId) -> Index {
     Index {
         id: IndexId(id),
-        range: RANGE,
+        range,
     }
 }
 

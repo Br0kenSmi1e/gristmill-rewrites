@@ -8,7 +8,8 @@ mod search;
 mod tests;
 
 use self::{
-    graph::{Graph, build_graphs},
+    graph::{Graph, build},
+    normalize::normalize_definition,
     search::{Biclique, enumerate_bicliques},
 };
 use crate::{
@@ -204,8 +205,9 @@ pub(crate) fn query(
         .definitions
         .get(target.0)
         .ok_or(QueryError::DefinitionOutOfBounds { position: target })?;
-    let graphs =
-        build_graphs(state.computation(), definition).map_err(QueryError::Canonicalization)?;
+    let canonical = normalize_definition(state.computation(), definition)
+        .map_err(QueryError::Canonicalization)?;
+    let graphs = build(canonical);
     let mut candidates = Vec::new();
     let mut rewrites = Vec::new();
 
