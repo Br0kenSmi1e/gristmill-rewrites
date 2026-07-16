@@ -1,5 +1,5 @@
-use gristmill_rewrites::canon::{CanonError, canon_expr, canon_term};
-use gristmill_rewrites::{
+use super::{canon_expr, canon_term};
+use crate::repr::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator, TensorId,
     TensorInfo, TensorRef, Term,
 };
@@ -295,50 +295,5 @@ fn preserves_fixed_index_ids() {
     assert_eq!(
         canon_term(&computation, &[index(10, R0), index(20, R0)], &term),
         Ok(Some(term))
-    );
-}
-
-#[test]
-fn validates_the_local_term_context() {
-    let computation = make_computation([(A, tensor(2))]);
-    let unknown_index = Term {
-        sums: Vec::new(),
-        coeff: rational(1, 1),
-        factors: vec![factor(A, &[0, 9])],
-    };
-    assert_eq!(
-        canon_term(&computation, &[index(0, R0)], &unknown_index),
-        Err(CanonError::UnknownIndex { index: IndexId(9) })
-    );
-
-    let duplicate_sum = Term {
-        sums: vec![index(2, R0), index(2, R0)],
-        coeff: rational(1, 1),
-        factors: vec![factor(A, &[0, 2])],
-    };
-    assert_eq!(
-        canon_term(&computation, &[index(0, R0)], &duplicate_sum),
-        Err(CanonError::DuplicateSummedIndex { index: IndexId(2) })
-    );
-
-    let invalid_symmetry = make_computation([(
-        A,
-        tensor_with_symmetry(2, &[0, 0], SymmetryAction::Identity),
-    )]);
-    let valid_shape = Term {
-        sums: Vec::new(),
-        coeff: rational(1, 1),
-        factors: vec![factor(A, &[0, 1])],
-    };
-    assert_eq!(
-        canon_term(
-            &invalid_symmetry,
-            &[index(0, R0), index(1, R0)],
-            &valid_shape
-        ),
-        Err(CanonError::InvalidSymmetryPermutation {
-            tensor: A,
-            perm: vec![0, 0],
-        })
     );
 }

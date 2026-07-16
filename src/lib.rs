@@ -2,7 +2,7 @@
 
 pub mod action;
 mod biclique;
-pub mod canon;
+mod canon;
 pub mod cost;
 mod parenthesize;
 mod permutation;
@@ -15,6 +15,7 @@ pub use action::{
     DefinitionPosition, ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace,
     PermutationAction, PermutationChoiceError, PermutationSpace, QueryError, TermPosition, query,
 };
+pub use canon::CanonError;
 pub use cost::{CostError, log_flops};
 pub use repr::{
     Coefficient, Computation, Index, IndexId, RangeId, SymmetryAction, SymmetryGenerator,
