@@ -4,14 +4,14 @@ use crate::{
     space::{PyAction, PySpace, SpaceKind, nonnegative_usize},
 };
 use gristmill_rewrites::{
-    self as rust, ActionQuery, ActionSpace, DefinitionPosition, State, TermPosition,
+    self as rust, ActionQuery, ActionSpace, DefinitionPosition, RangeId, State, TermPosition,
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
     types::PyTuple,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[pyclass(name = "State", frozen)]
 pub(crate) struct PyState {
@@ -133,10 +133,20 @@ pub(crate) fn equivalent(lhs: &PyState, rhs: &PyState) -> PyResult<bool> {
     rust::equivalent_states(&lhs.inner, &rhs.inner).map_err(error::debug)
 }
 
+#[pyfunction]
+pub(crate) fn log_flops(state: &PyState, log_sizes: BTreeMap<u32, f64>) -> PyResult<f64> {
+    let log_sizes = log_sizes
+        .into_iter()
+        .map(|(range, size)| (RangeId(range), size))
+        .collect();
+    rust::log_flops(state.inner.computation(), &log_sizes).map_err(error::debug)
+}
+
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyState>()?;
     module.add_function(wrap_pyfunction!(equivalent, module)?)?;
     module.add_function(wrap_pyfunction!(from_json, module)?)?;
+    module.add_function(wrap_pyfunction!(log_flops, module)?)?;
     module.add_function(wrap_pyfunction!(read_json, module)?)?;
     module.add_function(wrap_pyfunction!(to_json, module)?)?;
     module.add_function(wrap_pyfunction!(write_json, module)?)?;

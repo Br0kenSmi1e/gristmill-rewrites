@@ -1,4 +1,5 @@
 import json
+import math
 from fractions import Fraction
 from types import MappingProxyType
 
@@ -77,6 +78,7 @@ def test_exports_only_the_initial_rewrite_surface():
         "Term",
         "equivalent",
         "from_json",
+        "log_flops",
         "read_json",
         "to_json",
         "write_json",
@@ -173,6 +175,12 @@ def test_biclique_choice_errors_are_python_exceptions():
         space.select(1, (True,), (True,))
     with pytest.raises(gr.GristmillError, match="WrongLeftMaskLength"):
         space.select(0, (True,), (True, True))
+
+
+def test_log_flops_uses_range_log_sizes():
+    state = gr.from_json(biclique_json())
+
+    assert gr.log_flops(state, {}) == pytest.approx(math.log(7.0))
 
 
 def test_only_the_rewrite_protocol_methods_are_public():

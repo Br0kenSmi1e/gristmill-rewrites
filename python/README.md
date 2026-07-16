@@ -48,6 +48,17 @@ optimized = read_json("gristmill_optimized.json")
 assert equivalent(working, optimized)
 ```
 
+The logarithmic FLOP cost is also a module-level function. Its mapping values
+are natural logarithms of the corresponding range sizes:
+
+```python
+import math
+
+from gristmill_rewrites import log_flops
+
+cost = log_flops(state, {0: math.log(1000), 1: math.log(5000)})
+```
+
 `State` and its symbolic representation are exposed through immutable Python
 objects. The rewrite protocol consists only of `State.query`,
 `Space.snapshot`, `Space.select`, and `State.apply`. Actions are opaque and can
