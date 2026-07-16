@@ -51,8 +51,12 @@ pub(super) fn enumerate_bipartitions(exts: &[Index], term: &Term) -> Vec<TermBip
 
 pub(super) fn align_bipartition(
     definition_exts: &[Index],
-    bipartition: TermBipartition,
+    mut bipartition: TermBipartition,
 ) -> Result<TermBipartition, CanonError> {
+    bipartition
+        .contracted
+        .sort_by_key(|index| (index.range, index.id));
+
     let external_ids = definition_exts
         .iter()
         .map(|index| index.id)
@@ -95,19 +99,25 @@ pub(super) fn align_bipartition(
     let TermBipartition {
         coeff,
         left,
-        left_exts,
+        mut left_exts,
         right,
-        right_exts,
-        contracted,
+        mut right_exts,
+        mut contracted,
     } = bipartition;
+    left_exts = rename_indices(left_exts, &contracted_renames);
+    right_exts = rename_indices(right_exts, &contracted_renames);
+    contracted = rename_indices(contracted, &contracted_renames);
+    left_exts.sort_by_key(|index| index.id);
+    right_exts.sort_by_key(|index| index.id);
+    contracted.sort_by_key(|index| index.id);
 
     Ok(TermBipartition {
         coeff,
         left: rename_term(left, &left_renames),
-        left_exts: rename_indices(left_exts, &contracted_renames),
+        left_exts,
         right: rename_term(right, &right_renames),
-        right_exts: rename_indices(right_exts, &contracted_renames),
-        contracted: rename_indices(contracted, &contracted_renames),
+        right_exts,
+        contracted,
     })
 }
 

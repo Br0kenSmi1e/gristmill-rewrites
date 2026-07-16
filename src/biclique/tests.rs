@@ -175,7 +175,7 @@ fn moves_child_coefficients_to_the_canonical_bipartition() {
 #[test]
 fn aligns_new_indices_without_renaming_definition_externals() {
     let term = Term {
-        sums: vec![index(11), index(12), index(10)],
+        sums: vec![index(11), index_in(12, RangeId(1)), index(10)],
         coeff: one(),
         factors: vec![
             tensor(A, &[0, 2, 11, 12, 10]),
@@ -189,16 +189,16 @@ fn aligns_new_indices_without_renaming_definition_externals() {
     let aligned = align_bipartition(&definition_exts, bipartition).unwrap();
 
     assert_eq!(aligned.left.sums, vec![index(4)]);
-    assert_eq!(aligned.left.factors[0].indices, ids(&[0, 2, 4, 1, 3]));
+    assert_eq!(aligned.left.factors[0].indices, ids(&[0, 2, 4, 3, 1]));
     assert_eq!(aligned.left.factors[1].indices, ids(&[4]));
     assert_eq!(
         aligned.left_exts,
-        vec![index(0), index(2), index(1), index(3)]
+        vec![index(0), index(1), index(2), index_in(3, RangeId(1))]
     );
     assert_eq!(aligned.right.sums, Vec::new());
-    assert_eq!(aligned.right.factors[0].indices, ids(&[1, 3]));
-    assert_eq!(aligned.right_exts, vec![index(1), index(3)]);
-    assert_eq!(aligned.contracted, vec![index(1), index(3)]);
+    assert_eq!(aligned.right.factors[0].indices, ids(&[3, 1]));
+    assert_eq!(aligned.right_exts, vec![index(1), index_in(3, RangeId(1))]);
+    assert_eq!(aligned.contracted, vec![index(1), index_in(3, RangeId(1))]);
 }
 
 #[test]
