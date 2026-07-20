@@ -68,12 +68,22 @@ BicliqueSnapshot: TypeAlias = tuple[
     tuple[Index, ...],
     tuple[Term, ...],
 ]
+PermutationUse: TypeAlias = tuple[tuple[int, ...], Fraction]
+PermutationSnapshot: TypeAlias = tuple[
+    tuple[Index, ...],
+    tuple[Term, ...],
+    tuple[PermutationUse, ...],
+]
 
 @final
 class Space:
     def snapshot(
         self,
-    ) -> ParenthesizeSnapshot | tuple[BicliqueSnapshot, ...]: ...
+    ) -> (
+        ParenthesizeSnapshot
+        | tuple[BicliqueSnapshot, ...]
+        | tuple[PermutationSnapshot, ...]
+    ): ...
     @overload
     def select(self, left: Sequence[bool]) -> Action: ...
     @overload
@@ -101,6 +111,8 @@ class State:
     ) -> Space: ...
     @overload
     def query(self, kind: Literal["biclique"], definition: int) -> Space: ...
+    @overload
+    def query(self, kind: Literal["permutation"], definition: int) -> Space: ...
     def apply(self, action: Action) -> State: ...
 
 def equivalent(lhs: State, rhs: State) -> bool: ...

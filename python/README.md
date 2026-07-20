@@ -31,12 +31,31 @@ action = biclique.select(
 )
 factored = state.apply(action)
 
+# Factor a shared pattern under external-index permutations.
+permutation = state.query("permutation", 0)
+families = permutation.snapshot()
+exts, roots, uses = families[0]
+print(exts, roots)
+print(uses)  # ((slot permutation, Fraction weight), ...)
+
+action = permutation.select(
+    0,
+    (True,) * len(roots),
+    (True,) * len(uses),
+)
+permuted = state.apply(action)
+
 write_json(factored, "output.json")
 ```
 
 The parenthesization snapshot is `(exts, term)`. A biclique snapshot is a
 tuple of candidates, each shaped as
 `(left_exts, left_terms, right_exts, right_terms)`.
+A permutation snapshot is a tuple of maximal families, each shaped as
+`(exts, roots, uses)`. Each use is `(permutation, coefficient)`, where the
+permutation contains external-slot positions and the coefficient is an exact
+`Fraction`. Selection takes a candidate index followed by masks for the roots
+and uses; each mask must select at least two entries.
 
 Exact equivalence checking is available as a module-level function:
 
@@ -62,5 +81,4 @@ cost = log_flops(state, {0: math.log(1000), 1: math.log(5000)})
 `State` and its symbolic representation are exposed through immutable Python
 objects. The rewrite protocol consists only of `State.query`,
 `Space.snapshot`, `Space.select`, and `State.apply`. Actions are opaque and can
-only be created by selecting a valid choice from a space. Permutation
-factorization is not part of the initial Python interface.
+only be created by selecting a valid choice from a space.

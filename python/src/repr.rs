@@ -1,5 +1,6 @@
 use gristmill_rewrites::{
-    Computation, Index, SymmetryAction, SymmetryGenerator, TensorDef, TensorInfo, TensorRef, Term,
+    Coefficient, Computation, Index, SymmetryAction, SymmetryGenerator, TensorDef, TensorInfo,
+    TensorRef, Term,
 };
 use pyo3::{
     prelude::*,
@@ -138,9 +139,7 @@ impl PyTerm {
 
     #[getter]
     fn coeff<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        PyModule::import(py, "fractions")?
-            .getattr("Fraction")?
-            .call1((self.inner.coeff.to_string(),))
+        coefficient(py, &self.inner.coeff)
     }
 
     #[getter]
@@ -261,6 +260,15 @@ pub(crate) fn term_tuple<'py>(py: Python<'py>, terms: &[Term]) -> PyResult<Bound
         .map(|inner| Py::new(py, PyTerm { inner }))
         .collect::<PyResult<Vec<_>>>()?;
     PyTuple::new(py, terms)
+}
+
+pub(crate) fn coefficient<'py>(
+    py: Python<'py>,
+    coefficient: &Coefficient,
+) -> PyResult<Bound<'py, PyAny>> {
+    PyModule::import(py, "fractions")?
+        .getattr("Fraction")?
+        .call1((coefficient.to_string(),))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

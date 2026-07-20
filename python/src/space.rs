@@ -1,10 +1,10 @@
 use crate::{
     error,
-    repr::{PyTerm, index_tuple, term_tuple},
+    repr::{PyTerm, coefficient, index_tuple, term_tuple},
 };
 use gristmill_rewrites::{
     Action as RustAction, BicliqueSpace as RustBicliqueSpace,
-    ParenthesizeSpace as RustParenthesizeSpace, State,
+    ParenthesizeSpace as RustParenthesizeSpace, PermutationSpace as RustPermutationSpace, State,
 };
 use pyo3::{
     exceptions::PyTypeError,
@@ -22,6 +22,7 @@ pub(crate) struct PyAction {
 pub(crate) enum SpaceKind {
     Parenthesize(RustParenthesizeSpace),
     Biclique(RustBicliqueSpace),
+    Permutation(RustPermutationSpace),
 }
 
 #[pyclass(name = "Space", frozen)]
@@ -54,6 +55,28 @@ impl PySpace {
                     .collect::<PyResult<Vec<_>>>()?;
                 PyTuple::new(py, candidates)
             }
+            SpaceKind::Permutation(space) => {
+                let candidates = space
+                    .snapshot()
+                    .into_iter()
+                    .map(|(exts, roots, uses)| {
+                        let uses = uses
+                            .into_iter()
+                            .map(|(permutation, weight)| {
+                                (PyTuple::new(py, permutation)?, coefficient(py, &weight)?)
+                                    .into_pyobject(py)
+                            })
+                            .collect::<PyResult<Vec<_>>>()?;
+                        (
+                            index_tuple(py, &exts)?,
+                            term_tuple(py, &roots)?,
+                            PyTuple::new(py, uses)?,
+                        )
+                            .into_pyobject(py)
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                PyTuple::new(py, candidates)
+            }
         }
     }
 
@@ -72,6 +95,15 @@ impl PySpace {
                 let right = bool_mask(&args.get_item(2)?, "right")?;
                 space
                     .select(candidate, &left, &right)
+                    .map_err(error::debug)?
+            }
+            SpaceKind::Permutation(space) => {
+                require_arity(args, 3, "permutation")?;
+                let candidate = nonnegative_usize(&args.get_item(0)?, "candidate")?;
+                let roots = bool_mask(&args.get_item(1)?, "roots")?;
+                let uses = bool_mask(&args.get_item(2)?, "uses")?;
+                space
+                    .select(candidate, &roots, &uses)
                     .map_err(error::debug)?
             }
         };

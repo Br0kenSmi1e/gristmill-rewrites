@@ -101,7 +101,7 @@ remain authoritative for the transition, cost, and equivalence result.
 
 ## Available rewrites
 
-The current Python bindings expose two rewrite kinds:
+The current Python bindings expose three rewrite kinds:
 
 - **Parenthesization** targets one term in one definition with
   `state.query("parenthesize", definition, term)`. Its snapshot is
@@ -118,9 +118,16 @@ The current Python bindings expose two rewrite kinds:
   `space.select(candidate, left_mask, right_mask)`, where the masks follow the
   displayed term order and each selected side must be nonempty. A snapshot may
   contain no candidates.
+- **Permutation factorization** targets a definition with
+  `state.query("permutation", definition)`. Its snapshot is a tuple of maximal
+  families shaped as `(exts, roots, uses)`. Each use contains an external-slot
+  permutation and its exact coefficient. Selection uses
+  `space.select(candidate, root_mask, use_mask)`; each mask must select at
+  least two entries. The current search considers sum-free terms containing
+  one tensor occurrence with distinct external indices, and only
+  range-preserving permutations.
 
-Permutation factorization exists in the Rust kernel, but it is not exposed by
-the current Python interface. See the
+See the
 [Python package guide](python/README.md) for detailed snapshot and selection
 examples.
 

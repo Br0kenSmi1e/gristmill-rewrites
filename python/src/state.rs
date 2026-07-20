@@ -64,9 +64,20 @@ impl PyState {
                 };
                 SpaceKind::Biclique(space)
             }
+            "permutation" => {
+                require_target_arity(target, 1, kind)?;
+                let definition = nonnegative_usize(&target.get_item(0)?, "definition")?;
+                let query = ActionQuery::PermutationFactor(DefinitionPosition(definition));
+                let ActionSpace::Permutation(space) =
+                    rust::query(&self.inner, query).map_err(error::debug)?
+                else {
+                    unreachable!("a permutation query returns its typed space")
+                };
+                SpaceKind::Permutation(space)
+            }
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown query kind {kind:?}; expected 'parenthesize' or 'biclique'"
+                    "unknown query kind {kind:?}; expected 'parenthesize', 'biclique', or 'permutation'"
                 )));
             }
         };

@@ -63,6 +63,43 @@ def biclique_json() -> str:
     )
 
 
+def permutation_json() -> str:
+    def indexed_term(coeff: int, tensor: int, indices: list[int]) -> dict:
+        return {
+            "sums": [],
+            "coeff": str(coeff),
+            "factors": [{"tensor": tensor, "indices": indices}],
+        }
+
+    return json.dumps(
+        {
+            "computation": {
+                "ranges": [0],
+                "tensors": {
+                    str(tensor): {"rank": 2, "symmetry": []}
+                    for tensor in range(3)
+                },
+                "definitions": [
+                    {
+                        "base": 2,
+                        "exts": [
+                            {"id": 0, "range": 0},
+                            {"id": 1, "range": 0},
+                        ],
+                        "rhs": [
+                            indexed_term(2, 0, [0, 1]),
+                            indexed_term(-4, 0, [1, 0]),
+                            indexed_term(3, 1, [1, 0]),
+                            indexed_term(-6, 1, [0, 1]),
+                        ],
+                    }
+                ],
+            },
+            "protected_outputs": [2],
+        }
+    )
+
+
 def test_exports_only_the_initial_rewrite_surface():
     assert gr.__all__ == (
         "Action",
@@ -174,6 +211,40 @@ def test_biclique_choice_errors_are_python_exceptions():
     with pytest.raises(gr.GristmillError, match="CandidateOutOfBounds"):
         space.select(1, (True,), (True,))
     with pytest.raises(gr.GristmillError, match="WrongLeftMaskLength"):
+        space.select(0, (True,), (True, True))
+
+
+def test_permutation_space_exposes_rooted_maximal_families():
+    state = gr.from_json(permutation_json())
+    space = state.query("permutation", 0)
+    candidates = space.snapshot()
+
+    assert isinstance(space, gr.Space)
+    assert len(candidates) == 1
+
+    exts, roots, uses = candidates[0]
+    assert tuple((index.id, index.range) for index in exts) == ((0, 0), (1, 0))
+    assert tuple(root.coeff for root in roots) == (Fraction(2), Fraction(3))
+    assert tuple(root.factors[0].tensor for root in roots) == (0, 1)
+    assert tuple(root.factors[0].indices for root in roots) == ((0, 1), (1, 0))
+    assert uses == (
+        ((0, 1), Fraction(1)),
+        ((1, 0), Fraction(-2)),
+    )
+
+    action = space.select(0, (True, True), (True, True))
+    rewritten = state.apply(action)
+
+    assert gr.equivalent(state, rewritten)
+    assert len(rewritten.computation.definitions) == 2
+
+
+def test_permutation_choice_errors_are_python_exceptions():
+    space = gr.from_json(permutation_json()).query("permutation", 0)
+
+    with pytest.raises(gr.GristmillError, match="CandidateOutOfBounds"):
+        space.select(1, (True,), (True,))
+    with pytest.raises(gr.GristmillError, match="WrongRootMaskLength"):
         space.select(0, (True,), (True, True))
 
 
