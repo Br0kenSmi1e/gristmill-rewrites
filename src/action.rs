@@ -4,7 +4,9 @@ use crate::{biclique, canon::CanonError, parenthesize, permutation, state::State
 
 pub use crate::biclique::{BicliqueAction, BicliqueChoiceError, BicliqueSnapshot, BicliqueSpace};
 pub use crate::parenthesize::{ParenthesizeAction, ParenthesizeChoiceError, ParenthesizeSpace};
-pub use crate::permutation::{PermutationAction, PermutationChoiceError, PermutationSpace};
+pub use crate::permutation::{
+    PermutationAction, PermutationChoiceError, PermutationSnapshot, PermutationSpace,
+};
 
 /// A position in the state's definition sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

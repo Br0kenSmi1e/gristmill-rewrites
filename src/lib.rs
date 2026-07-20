@@ -15,8 +15,8 @@ pub mod verify;
 pub use action::{
     Action, ActionQuery, ActionSpace, BicliqueAction, BicliqueChoiceError, BicliqueSnapshot,
     BicliqueSpace, DefinitionPosition, ParenthesizeAction, ParenthesizeChoiceError,
-    ParenthesizeSpace, PermutationAction, PermutationChoiceError, PermutationSpace, QueryError,
-    TermPosition, query,
+    ParenthesizeSpace, PermutationAction, PermutationChoiceError, PermutationSnapshot,
+    PermutationSpace, QueryError, TermPosition, query,
 };
 pub use canon::CanonError;
 pub use cost::{CostError, log_flops};
